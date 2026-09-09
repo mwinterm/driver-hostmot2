@@ -1,0 +1,83 @@
+# driver-hostmot2's own CI (ADR 0022).
+#
+# There is no Mesa card on a GitHub runner, so what this can prove is
+# everything up to the wire: that LinuxCNC's driver still builds unmodified
+# against the shim, that the shim satisfies its whole link surface, and that
+# `hm2-host` runs it end to end against upstream's own fake board -- module
+# load, IDROM parse, pin declaration, the shared region, the cycle.
+#
+# What it cannot prove is the only thing that matters in the end: a real card
+# answering a real packet in a real millisecond. That is the Mesa bench's job,
+# and until it exists every row of the support matrix says `untested`.
+
+name: ci
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build:
+    name: build and run against the fake board
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The whole point of the shim. If this breaks, either upstream changed
+      # the HAL surface -- which a sync would have brought in -- or the shim
+      # stopped covering it.
+      - name: the driver builds unmodified against the shim
+        run: make -j"$(nproc)"
+
+      - name: nothing is left undefined
+        run: |
+          for so in build/libhostmot2.so build/libhm2_eth.so build/libhm2shim.so \
+                    build/libhm2_test.so; do
+            missing=$(LD_LIBRARY_PATH=build ldd -r "$so" 2>&1 | grep 'undefined symbol' || true)
+            if [ -n "$missing" ]; then
+              echo "$so has undefined symbols:" >&2
+              echo "$missing" >&2
+              exit 1
+            fi
+          done
+          echo "every symbol resolves"
+
+      # Upstream's own fake board, which is what lets the whole path run on a
+      # machine with no Mesa hardware in it.
+      - name: the host runs the driver against the fake board
+        run: |
+          timeout 30 ./build/hm2-host examples/test-board.conf build \
+            > /tmp/host.log 2>&1 || true
+          cat /tmp/host.log
+
+          # The generic driver parsed the fake board's IDROM and enumerated it.
+          grep -q 'hm2/hm2_test.0: registered' /tmp/host.log \
+            || { echo "the driver never registered the board" >&2; exit 1; }
+
+          # The shim collected its pins and its cyclic functions.
+          grep -qE "component 'hm2_test' ready: [0-9]+ pin" /tmp/host.log \
+            || { echo "the shim collected no pins" >&2; exit 1; }
+          grep -q "exported function 'hm2_test.0.read'" /tmp/host.log \
+            || { echo "no read function was exported" >&2; exit 1; }
+
+          # And the host published them into a region and cycled it.
+          grep -qE 'region /cnc-hm2-test: [0-9]+ signal' /tmp/host.log \
+            || { echo "the region was never created" >&2; exit 1; }
+
+          # With no control attached it gives up and lets the FPGA watchdog
+          # bite, which is the behaviour ADR 0011 §5 asks for and the one a
+          # machine depends on when the control goes away.
+          grep -q 'letting the FPGA watchdog bite' /tmp/host.log \
+            || { echo "the response watchdog never fired" >&2; exit 1; }
+
+      # The rule that makes the two-repository split mean anything, checked
+      # from this side too (ADR 0022 §8).
+      - name: nothing from here has leaked the other way
+        run: |
+          if grep -rIl --exclude-dir=.git --exclude-dir=third_party \
+               -e 'cnc-core' -e 'cnc_core' shim host 2>/dev/null; then
+            echo "shim/ or host/ mentions the control's own crates; only" >&2
+            echo "cnc_fieldbus.h crosses, and it crosses in this direction" >&2
+            exit 1
+          fi
+          echo "no dependency on the control's source"
