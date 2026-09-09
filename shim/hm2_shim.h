@@ -161,10 +161,16 @@ void hm2_shim_cell_set(const hm2_shim_signal *signal, double value);
  * `rtapi_info_type_<name>` holding its type letter. That is the mechanism
  * LinuxCNC's own loader uses, which is why the sources need no edit.
  *
+ * `module` is the `dlopen` handle to look in. The driver modules are opened
+ * `RTLD_LOCAL` -- two LinuxCNC modules, each with its own `rtapi_app_main` --
+ * so there is no flat namespace to search, and the caller tries each module
+ * it loaded.
+ *
  * `index` is the element for an array parameter, and 0 for a scalar.
- * Returns 0, or -1 with a message logged.
+ * Returns 0 if it was set, 1 if this module does not have it, -1 on an error
+ * that was logged.
  */
-int hm2_shim_set_module_param(const char *name, size_t index, const char *value);
+int hm2_shim_set_module_param(void *module, const char *name, size_t index, const char *value);
 
 /*
  * Where the shim's diagnostics go. The host sets this so that a driver message
@@ -176,6 +182,42 @@ void hm2_shim_set_log(void (*sink)(int level, const char *line));
 
 /* The message level the driver's `rtapi_print_msg` is filtered against. */
 void hm2_shim_set_msg_level(int level);
+
+/* Flushes a driver message left without a trailing newline. At shutdown. */
+void hm2_shim_flush_log(void);
+
+/* ---------------------------------------------------------------------------
+ * HAL parameters
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Hands the shim the parameter values the host's configuration file set, by
+ * HAL name. Called before `rtapi_app_main`, because a parameter is read at
+ * declaration and there is deliberately no moment at which the driver runs on
+ * a default nobody chose.
+ *
+ * The arrays are borrowed, not copied: the host owns them and must keep them
+ * alive until `hm2_shim_fini`.
+ */
+void hm2_shim_set_params(const char **names, const double *values, size_t count);
+
+/* Whether the driver called `hal_ready`, and what it called itself. */
+int hm2_shim_component_ready(void);
+const char *hm2_shim_component_name(void);
+
+/* How much of the arena the driver took, for the start-up report. */
+size_t hm2_shim_arena_used(void);
+size_t hm2_shim_arena_size(void);
+
+/*
+ * Parameters the configuration set that no declaration ever claimed, written
+ * into `into` up to `capacity`. Returns how many there were.
+ *
+ * Almost always a typo, and worth refusing a start-up over: a misspelled
+ * encoder scale leaves the encoder on its default, the machine moves by the
+ * wrong distance, and nothing anywhere says why.
+ */
+size_t hm2_shim_unclaimed_params(const char **into, size_t capacity);
 
 #ifdef __cplusplus
 }

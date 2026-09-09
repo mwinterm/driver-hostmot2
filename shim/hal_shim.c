@@ -55,10 +55,23 @@ static hm2_shim_funct *functs;
 static size_t funct_capacity;
 static size_t funct_count;
 
-/* The component the driver created. One is all hostmot2 asks for. */
-static char component_name[HAL_NAME_LEN + 1];
-static int component_id;
-static int component_ready;
+/*
+ * The components the driver created.
+ *
+ * More than one, and that is not a surprise once you know the build: the
+ * generic driver and the transport are two LinuxCNC modules and each calls
+ * `hal_init` for itself. In HAL that gives them separate namespaces and
+ * separate lifetimes; here it gives them separate ids and nothing else,
+ * because the channel has one flat namespace of HAL names and a pin's full
+ * name already carries the board it belongs to.
+ */
+#define HM2_MAX_COMPONENTS 8
+
+static struct {
+    char name[HAL_NAME_LEN + 1];
+    int ready;
+} components[HM2_MAX_COMPONENTS];
+static int component_count;
 
 int hm2_shim_init(size_t arena_bytes, size_t max_signals, size_t max_functs) {
     arena = calloc(1, arena_bytes);
@@ -107,8 +120,7 @@ void hm2_shim_fini(void) {
     free(functs);
     functs = NULL;
     funct_capacity = funct_count = 0;
-    component_ready = 0;
-    component_id = 0;
+    component_count = 0;
 }
 
 /*
@@ -152,26 +164,25 @@ int hal_init(const char *name) {
     if (!name) {
         return -EINVAL;
     }
-    if (component_id != 0) {
-        hm2_shim_log(RTAPI_MSG_ERR,
-                     "shim: the driver asked for a second component ('%s' after '%s'); "
-                     "this host runs one",
-                     name, component_name);
+    if (component_count >= HM2_MAX_COMPONENTS) {
+        hm2_shim_log(RTAPI_MSG_ERR, "shim: more than %d components", HM2_MAX_COMPONENTS);
         return -EINVAL;
     }
-    snprintf(component_name, sizeof(component_name), "%s", name);
-    /* Any positive number. HAL's is an index into its component table; here it
-       is only something to hand back to the calls that take it. */
-    component_id = 1;
-    component_ready = 0;
-    hm2_shim_log(RTAPI_MSG_INFO, "shim: component '%s' created", component_name);
-    return component_id;
+    int id = component_count + 1;
+    snprintf(components[component_count].name, sizeof(components[0].name), "%s", name);
+    components[component_count].ready = 0;
+    component_count++;
+    hm2_shim_log(RTAPI_MSG_INFO, "shim: component '%s' created", name);
+    /* HAL's id is an index into its component table; here it is a positive
+       number to hand back to the calls that take one, and nothing else --
+       every pin goes into one table whichever component declared it. */
+    return id;
 }
 
 int hal_exit(int comp_id) {
-    (void)comp_id;
-    component_id = 0;
-    component_ready = 0;
+    if (comp_id >= 1 && comp_id <= component_count) {
+        components[comp_id - 1].ready = 0;
+    }
     return 0;
 }
 
@@ -183,16 +194,34 @@ int hal_exit(int comp_id) {
  * is worth knowing when a later declaration turns up.
  */
 int hal_ready(int comp_id) {
-    (void)comp_id;
-    component_ready = 1;
-    hm2_shim_log(RTAPI_MSG_INFO, "shim: component '%s' ready: %zu pin(s), %zu function(s), "
-                                 "%zu of %zu arena bytes",
-                 component_name, signal_count, funct_count, arena_used, arena_size);
+    const char *name = "?";
+    if (comp_id >= 1 && comp_id <= component_count) {
+        components[comp_id - 1].ready = 1;
+        name = components[comp_id - 1].name;
+    }
+    hm2_shim_log(RTAPI_MSG_INFO,
+                 "shim: component '%s' ready: %zu pin(s) and %zu function(s) so far, "
+                 "%zu of %zu arena bytes",
+                 name, signal_count, funct_count, arena_used, arena_size);
     return 0;
 }
 
-int hm2_shim_component_ready(void) { return component_ready; }
-const char *hm2_shim_component_name(void) { return component_name; }
+/* Whether every component the driver created said it had finished. */
+int hm2_shim_component_ready(void) {
+    if (component_count == 0) {
+        return 0;
+    }
+    for (int i = 0; i < component_count; i++) {
+        if (!components[i].ready) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+const char *hm2_shim_component_name(void) {
+    return component_count > 0 ? components[0].name : "";
+}
 
 /* ---------------------------------------------------------------------------
  * Pins and parameters

@@ -30,7 +30,7 @@ BUILD     ?= build
 # -D_GNU_SOURCE for `environ`, which hm2_eth.c uses to spawn its firewall
 # helper.
 CPPFLAGS  += -DRTAPI -D_GNU_SOURCE -I$(SHIM) -I$(SHIM)/include \
-             -I$(SHIM)/include/linuxcnc -I$(UPSTREAM)
+             -I$(SHIM)/include/linuxcnc -I$(UPSTREAM) -I$(HOST) -I$(HOST)/include
 CFLAGS    ?= -O2 -g -fPIC
 # The upstream sources are not warning-clean under this project's taste and
 # are not ours to make so; they are compiled as they arrive. The shim and the
@@ -80,7 +80,7 @@ $(BUILD)/libhm2_eth.so: $(ETH_OBJ) $(BUILD)/libhostmot2.so
 # defines it; that is how a module parameter is set without editing a source.
 $(BUILD)/hm2-host: $(HOST_OBJ) $(BUILD)/libhm2shim.so
 	@mkdir -p $(@D)
-	$(CC) -rdynamic -o $@ $(HOST_OBJ) -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS) -ldl
+	$(CC) -rdynamic -o $@ $(HOST_OBJ) -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS) -ldl -lrt
 
 $(BUILD)/hm2/%.o: $(UPSTREAM)/%.c
 	@mkdir -p $(@D)

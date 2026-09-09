@@ -328,34 +328,38 @@ void rtapi_release_firmware(const struct rtapi_firmware *fw) {
  *
  * `rtapi_info_address_<name>` and `rtapi_info_type_<name>` are emitted beside
  * every `RTAPI_MP_*` declaration and are not static, so they can be looked up
- * even though the parameter itself is. `dlsym(RTLD_DEFAULT, ...)` finds them
- * in this executable, which is why the host is linked with `-rdynamic`: it is
- * looking up its own symbols.
+ * even though the parameter itself is. That is the mechanism LinuxCNC's own
+ * loader uses, and using it too is why third_party/linuxcnc/ needs no edit.
+ *
+ * `module` is the `dlopen` handle to look in, because the driver modules are
+ * opened `RTLD_LOCAL` -- they are two LinuxCNC modules and both export
+ * `rtapi_app_main`, so a flat namespace would make that ambiguous. The host
+ * tries each module it loaded and reports which one had the parameter, since
+ * this repository's configuration file does not make the caller say.
  *
  * The type letter is the kernel's: "i" an int, "l" a long, "s" a string.
  */
-int hm2_shim_set_module_param(const char *name, size_t index, const char *value) {
+int hm2_shim_set_module_param(void *module, const char *name, size_t index,
+                              const char *value) {
     if (!name || !value) {
         return -1;
     }
     char symbol[256];
 
     snprintf(symbol, sizeof(symbol), "rtapi_info_address_%s", name);
-    void **address = dlsym(RTLD_DEFAULT, symbol);
+    void **address = dlsym(module, symbol);
     snprintf(symbol, sizeof(symbol), "rtapi_info_type_%s", name);
-    const char **type = dlsym(RTLD_DEFAULT, symbol);
+    const char **type = dlsym(module, symbol);
 
     if (!address || !type || !*address || !*type) {
-        hm2_shim_log(RTAPI_MSG_ERR,
-                     "shim: the driver has no module parameter '%s'. These are the names a "
-                     "LinuxCNC `loadrt` line would use -- board_ip, config, debug",
-                     name);
-        return -1;
+        /* Not an error here: the caller is trying each module in turn and
+           says so once, with the name, if none of them had it. */
+        return 1;
     }
 
     /* An array parameter's size, where the declaration recorded one. */
     snprintf(symbol, sizeof(symbol), "rtapi_info_size_%s", name);
-    const int *size = dlsym(RTLD_DEFAULT, symbol);
+    const int *size = dlsym(module, symbol);
     if (size && index >= (size_t)*size) {
         hm2_shim_log(RTAPI_MSG_ERR,
                      "shim: module parameter '%s' has %d element(s) and %zu was asked for",
