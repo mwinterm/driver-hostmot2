@@ -19,7 +19,15 @@ Origin
 
 The extracted tree is byte-for-byte identical to the upstream
 src/hal/drivers/mesa-hostmot2 directory at the commit named above
-(tree ebba780ae0204d8fa68a9e5f81d52f5a5b651d58).
+(tree ebba780ae0204d8fa68a9e5f81d52f5a5b651d58). It lives under
+third_party/linuxcnc/, moved there in one commit that changed no file's
+contents, so that everything this repository adds is visibly outside it.
+A `git diff` against a fresh subtree split of the same upstream commit,
+with that prefix, is empty.
+
+Taking a fix from upstream is: re-run the subtree split at the new
+upstream commit, then merge it into third_party/linuxcnc/ and move the
+pin recorded above.
 
 Licensing
 ---------
