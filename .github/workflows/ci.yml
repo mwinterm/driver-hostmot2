@@ -72,12 +72,26 @@ jobs:
 
       # The rule that makes the two-repository split mean anything, checked
       # from this side too (ADR 0022 §8).
-      - name: nothing from here has leaked the other way
+      # One file crosses between the two repositories, in this direction, and
+      # it is the channel's layout. Anything else would make this a build
+      # dependency on the control rather than a program that speaks its
+      # protocol -- and the separation the whole ADR rests on is that these
+      # are two programs sharing a documented boundary.
+      - name: only the channel header crosses
         run: |
-          if grep -rIl --exclude-dir=.git --exclude-dir=third_party \
-               -e 'cnc-core' -e 'cnc_core' shim host 2>/dev/null; then
-            echo "shim/ or host/ mentions the control's own crates; only" >&2
-            echo "cnc_fieldbus.h crosses, and it crosses in this direction" >&2
+          stray=$(grep -rhoE '#include *[<"]cnc_[a-z0-9_]+\.h[>"]' shim host \
+                    | grep -v 'cnc_fieldbus.h' | sort -u || true)
+          if [ -n "$stray" ]; then
+            echo "shim/ or host/ includes a header of the control's other than" >&2
+            echo "cnc_fieldbus.h:" >&2
+            echo "$stray" >&2
             exit 1
           fi
-          echo "no dependency on the control's source"
+          echo "cnc_fieldbus.h is the only one"
+
+          # And it is vendored rather than reached for, with the version it
+          # came from written down (ADR 0022 §8).
+          test -f host/include/cnc_fieldbus.h \
+            || { echo "the channel header is not vendored" >&2; exit 1; }
+          grep -q 'Copied from commit' host/include/README.md \
+            || { echo "host/include/README.md does not say which version" >&2; exit 1; }
