@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "cnc_fieldbus.h"
+#include "cnc_outboard.h"
 
 /* ---------------------------------------------------------------------------
  * Diagnostics
@@ -35,8 +35,8 @@ enum { HM2_COLLECT_FRESH = 0, HM2_COLLECT_STALE = 1, HM2_COLLECT_NEVER = 2 };
 typedef struct {
     void *base;
     size_t bytes;
-    cnc_fieldbus_shm *shm;
-    cnc_fieldbus_signal_block block;
+    cnc_outboard_shm *shm;
+    cnc_outboard_signal_block block;
     char name[256];
     int owner;
     /* Cycles this process could not publish because the core was behind. */
@@ -53,7 +53,7 @@ typedef struct {
     uint64_t worst_case_cycle_ns;
 } hm2_region_config;
 
-size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_fieldbus_signal_block *out);
+size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out);
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs);
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config);
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,

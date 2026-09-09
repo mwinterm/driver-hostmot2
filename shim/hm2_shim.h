@@ -4,7 +4,7 @@
  * The driver in third_party/linuxcnc/ is LinuxCNC's, unmodified, and it talks
  * to LinuxCNC's HAL. This shim is the other end of that conversation: a
  * reimplementation of the small part of HAL and RTAPI the driver actually
- * uses, backed by the fieldbus channel's signal table instead of by HAL's
+ * uses, backed by the outboard channel's signal table instead of by HAL's
  * shared memory (ADR 0022 §4).
  *
  * The surface is 25 functions. It is that small because the driver was

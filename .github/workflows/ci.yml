@@ -80,18 +80,18 @@ jobs:
       - name: only the channel header crosses
         run: |
           stray=$(grep -rhoE '#include *[<"]cnc_[a-z0-9_]+\.h[>"]' shim host \
-                    | grep -v 'cnc_fieldbus.h' | sort -u || true)
+                    | grep -v 'cnc_outboard.h' | sort -u || true)
           if [ -n "$stray" ]; then
             echo "shim/ or host/ includes a header of the control's other than" >&2
-            echo "cnc_fieldbus.h:" >&2
+            echo "cnc_outboard.h:" >&2
             echo "$stray" >&2
             exit 1
           fi
-          echo "cnc_fieldbus.h is the only one"
+          echo "cnc_outboard.h is the only one"
 
           # And it is vendored rather than reached for, with the version it
           # came from written down (ADR 0022 §8).
-          test -f host/include/cnc_fieldbus.h \
+          test -f host/include/cnc_outboard.h \
             || { echo "the channel header is not vendored" >&2; exit 1; }
           grep -q 'Copied from commit' host/include/README.md \
             || { echo "host/include/README.md does not say which version" >&2; exit 1; }

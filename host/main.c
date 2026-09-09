@@ -4,7 +4,7 @@
  * The GPL code never enters `cnc-core`. It runs here, and reaches the core
  * through the mechanism ADR 0011 and ADR 0012 already built for the IgH
  * EtherCAT master and nothing bespoke: a mapped region whose layout is
- * `cnc_fieldbus.h`, an ordinary driver plugin at the core's end, and a stub
+ * `cnc_outboard.h`, an ordinary driver plugin at the core's end, and a stub
  * for CI without hardware.
  *
  * WHAT ONE CYCLE IS
@@ -231,12 +231,12 @@ static int bind_signals(void) {
 /* The channel's type for one of the shim's. Both sides' enumerators agree. */
 static uint32_t channel_type(hm2_shim_type type) {
     switch (type) {
-    case HM2_SHIM_BOOL: return CNC_FIELDBUS_SIGNAL_BOOL;
+    case HM2_SHIM_BOOL: return CNC_OUTBOARD_SIGNAL_BOOL;
     case HM2_SHIM_SINT:
-    case HM2_SHIM_UINT: return CNC_FIELDBUS_SIGNAL_I32;
-    case HM2_SHIM_REAL: return CNC_FIELDBUS_SIGNAL_F64;
+    case HM2_SHIM_UINT: return CNC_OUTBOARD_SIGNAL_I32;
+    case HM2_SHIM_REAL: return CNC_OUTBOARD_SIGNAL_F64;
     }
-    return CNC_FIELDBUS_SIGNAL_F64;
+    return CNC_OUTBOARD_SIGNAL_F64;
 }
 
 /*
@@ -252,30 +252,30 @@ static uint32_t channel_type(hm2_shim_type type) {
  */
 static uint32_t channel_role(const char *name, hm2_shim_type type) {
     if (strstr(name, ".position") || strstr(name, ".counts")) {
-        return CNC_FIELDBUS_ROLE_POSITION;
+        return CNC_OUTBOARD_ROLE_POSITION;
     }
     if (strstr(name, ".velocity")) {
-        return CNC_FIELDBUS_ROLE_VELOCITY;
+        return CNC_OUTBOARD_ROLE_VELOCITY;
     }
     if (strstr(name, ".index-enable") || strstr(name, ".latch")) {
-        return CNC_FIELDBUS_ROLE_PROBE_LATCH;
+        return CNC_OUTBOARD_ROLE_PROBE_LATCH;
     }
-    return type == HM2_SHIM_BOOL ? CNC_FIELDBUS_ROLE_DIGITAL : CNC_FIELDBUS_ROLE_ANALOG;
+    return type == HM2_SHIM_BOOL ? CNC_OUTBOARD_ROLE_DIGITAL : CNC_OUTBOARD_ROLE_ANALOG;
 }
 
 static void declare_signals(hm2_region *region) {
     size_t index = 0;
     for (size_t i = 0; i < bound_input_count; i++) {
         const hm2_shim_signal *signal = bound_inputs[i].signal;
-        hm2_region_declare(region, index++, signal->name, CNC_FIELDBUS_SIGNAL_INPUT,
+        hm2_region_declare(region, index++, signal->name, CNC_OUTBOARD_SIGNAL_INPUT,
                            channel_type(signal->type), channel_role(signal->name, signal->type),
-                           CNC_FIELDBUS_UNIT_NONE, (uint32_t)bound_inputs[i].value_index);
+                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_inputs[i].value_index);
     }
     for (size_t i = 0; i < bound_output_count; i++) {
         const hm2_shim_signal *signal = bound_outputs[i].signal;
-        hm2_region_declare(region, index++, signal->name, CNC_FIELDBUS_SIGNAL_OUTPUT,
+        hm2_region_declare(region, index++, signal->name, CNC_OUTBOARD_SIGNAL_OUTPUT,
                            channel_type(signal->type), channel_role(signal->name, signal->type),
-                           CNC_FIELDBUS_UNIT_NONE, (uint32_t)bound_outputs[i].value_index);
+                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_outputs[i].value_index);
     }
 }
 
@@ -440,7 +440,7 @@ int main(int argc, char **argv) {
     };
     hm2_region_describe(&region, &header);
     declare_signals(&region);
-    hm2_region_set_state(&region, CNC_FIELDBUS_STATE_RUNNING);
+    hm2_region_set_state(&region, CNC_OUTBOARD_STATE_RUNNING);
 
     hm2_log(HM2_LOG_INFO,
             "region %s: %zu signal(s), %zu in and %zu out, %u us cycle, generation %llu",
@@ -527,7 +527,7 @@ int main(int argc, char **argv) {
                         "watchdog bite. The outputs go to their safe state and the drive "
                         "enables drop",
                         (unsigned long long)unanswered);
-                hm2_region_set_state(&region, CNC_FIELDBUS_STATE_FAULTED);
+                hm2_region_set_state(&region, CNC_OUTBOARD_STATE_FAULTED);
                 break;
             }
         } else {
@@ -544,9 +544,9 @@ int main(int argc, char **argv) {
 
         /* The core said it is going away. Nothing to wait for. */
         uint32_t state = hm2_region_state(&region);
-        if (state == CNC_FIELDBUS_STATE_SHUTDOWN || state == CNC_FIELDBUS_STATE_FAULTED) {
+        if (state == CNC_OUTBOARD_STATE_SHUTDOWN || state == CNC_OUTBOARD_STATE_FAULTED) {
             hm2_log(HM2_LOG_INFO, "the core has %s",
-                    state == CNC_FIELDBUS_STATE_SHUTDOWN ? "shut down" : "faulted");
+                    state == CNC_OUTBOARD_STATE_SHUTDOWN ? "shut down" : "faulted");
             break;
         }
 

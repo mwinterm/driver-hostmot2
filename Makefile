@@ -3,7 +3,7 @@
 # Three pieces and the shape upstream already has:
 #
 #   libhm2shim.so    the HAL/RTAPI surface the driver is written against,
-#                    reimplemented over the fieldbus channel (shim/).
+#                    reimplemented over the outboard channel (shim/).
 #   libhostmot2.so   LinuxCNC's generic HostMot2 driver: the IDROM, the module
 #                    descriptors, and every function the FPGA implements.
 #   libhm2_eth.so    the LBP16-over-UDP transport, for the Ethernet boards.

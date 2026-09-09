@@ -75,7 +75,7 @@ Attach a control to the same region and the two halves meet:
 ```yaml
 drivers:
   - name: hm2
-    library: libcnc_driver_fieldbus.so
+    library: libcnc_driver_outboard.so
     config:
       axes: "3"
       region: "/cnc-hm2-test"
@@ -112,5 +112,5 @@ which arrives with the fork and is not a claim this repository has earned.
 
 No function, snippet or algorithm from this repository or from LinuxCNC is
 copied into LibreCNC. Its CI fails on a GPL license header anywhere in its
-tree. The only thing that crosses is `cnc_fieldbus.h`, in this direction, and
+tree. The only thing that crosses is `cnc_outboard.h`, in this direction, and
 it is Apache-2.0 OR MIT precisely so that it may.

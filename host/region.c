@@ -1,7 +1,7 @@
 /*
  * The core's end of the channel, from this side (ADR 0011, ADR 0022 §3).
  *
- * The layout is `cnc_fieldbus.h`, vendored under host/include/. That file is
+ * The layout is `cnc_outboard.h`, vendored under host/include/. That file is
  * the protocol -- there is no library to link, and there deliberately is not:
  * the core's Rust implementation and this C one are two descriptions of one
  * set of bytes, and the whole reason the header is the source of truth is that
@@ -42,12 +42,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "cnc_fieldbus.h"
+#include "cnc_outboard.h"
 #include "hm2_host.h"
 
 /* Rounds up to a whole number of cache lines, as the core's `Layout` does. */
 static size_t to_line(size_t bytes) {
-    size_t line = CNC_FIELDBUS_CACHE_LINE;
+    size_t line = CNC_OUTBOARD_CACHE_LINE;
     return ((bytes + line - 1) / line) * line;
 }
 
@@ -61,8 +61,8 @@ static size_t to_line(size_t bytes) {
  * refused at the core's attach with the reason named, which is the outcome to
  * want -- the alternative is two processes disagreeing about where a value is.
  */
-size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_fieldbus_signal_block *out) {
-    size_t fixed = sizeof(cnc_fieldbus_shm);
+size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out) {
+    size_t fixed = sizeof(cnc_outboard_shm);
     size_t count = inputs + outputs;
     memset(out, 0, sizeof(*out));
     if (count == 0) {
@@ -72,8 +72,8 @@ size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_fieldbus_signal_bloc
         return fixed;
     }
 
-    size_t table_offset = to_line(fixed + sizeof(cnc_fieldbus_signal_block));
-    size_t table_size = count * sizeof(cnc_fieldbus_signal_desc);
+    size_t table_offset = to_line(fixed + sizeof(cnc_outboard_signal_block));
+    size_t table_size = count * sizeof(cnc_outboard_signal_desc);
     size_t input_offset = to_line(table_offset + table_size);
     size_t input_stride = to_line(inputs * sizeof(double));
     size_t output_offset = input_offset + 2 * input_stride;
@@ -83,7 +83,7 @@ size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_fieldbus_signal_bloc
     out->count = (uint32_t)count;
     out->input_count = (uint32_t)inputs;
     out->output_count = (uint32_t)outputs;
-    out->desc_size = (uint32_t)sizeof(cnc_fieldbus_signal_desc);
+    out->desc_size = (uint32_t)sizeof(cnc_outboard_signal_desc);
     out->table_offset = table_offset;
     out->input_offset = input_offset;
     out->output_offset = output_offset;
@@ -105,7 +105,7 @@ size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_fieldbus_signal_bloc
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs) {
     memset(region, 0, sizeof(*region));
 
-    cnc_fieldbus_signal_block block;
+    cnc_outboard_signal_block block;
     size_t bytes = hm2_region_layout(inputs, outputs, &block);
 
     shm_unlink(name);
@@ -150,11 +150,11 @@ int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_
 
 /* Fills the read-only header. Once, before either side starts cycling. */
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     memset(&shm->config, 0, sizeof(shm->config));
-    shm->config.version_major = CNC_FIELDBUS_ABI_VERSION_MAJOR;
-    shm->config.version_minor = CNC_FIELDBUS_ABI_VERSION_MINOR;
-    shm->config.version_patch = CNC_FIELDBUS_ABI_VERSION_PATCH;
+    shm->config.version_major = CNC_OUTBOARD_ABI_VERSION_MAJOR;
+    shm->config.version_minor = CNC_OUTBOARD_ABI_VERSION_MINOR;
+    shm->config.version_patch = CNC_OUTBOARD_ABI_VERSION_PATCH;
     shm->config.axis_count = config->axis_count;
     /*
      * A different value on every start, and the only thing that lets the core
@@ -165,8 +165,8 @@ void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     shm->config.generation = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-    /* The fixed part only. The tail says its own size; see cnc_fieldbus.h. */
-    shm->config.layout_size = sizeof(cnc_fieldbus_shm);
+    /* The fixed part only. The tail says its own size; see cnc_outboard.h. */
+    shm->config.layout_size = sizeof(cnc_outboard_shm);
     shm->config.cycle_time_ns = config->cycle_ns;
     shm->config.core_watchdog_cycles = config->core_watchdog_cycles;
     shm->config.response_watchdog_cycles = config->response_watchdog_cycles;
@@ -175,20 +175,20 @@ void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
     shm->config.worst_case_cycle_ns = config->worst_case_cycle_ns;
 
     if (region->block.count > 0) {
-        cnc_fieldbus_signal_block *block =
-            (void *)((char *)region->base + sizeof(cnc_fieldbus_shm));
+        cnc_outboard_signal_block *block =
+            (void *)((char *)region->base + sizeof(cnc_outboard_shm));
         *block = region->block;
     }
-    atomic_store_explicit((_Atomic uint32_t *)&shm->state, CNC_FIELDBUS_STATE_STARTING,
+    atomic_store_explicit((_Atomic uint32_t *)&shm->state, CNC_OUTBOARD_STATE_STARTING,
                           memory_order_release);
 }
 
 /* One descriptor. Written before cycling starts and read-only after. */
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,
                         uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index) {
-    cnc_fieldbus_signal_desc *table =
+    cnc_outboard_signal_desc *table =
         (void *)((char *)region->base + region->block.table_offset);
-    cnc_fieldbus_signal_desc *desc = &table[index];
+    cnc_outboard_signal_desc *desc = &table[index];
     memset(desc, 0, sizeof(*desc));
     snprintf(desc->name, sizeof(desc->name), "%s", name);
     desc->direction = direction;
@@ -200,7 +200,7 @@ void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint
 }
 
 void hm2_region_set_state(hm2_region *region, uint32_t state) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     atomic_store_explicit((_Atomic uint32_t *)&shm->state, state, memory_order_release);
 }
 
@@ -229,7 +229,7 @@ const double *hm2_region_outputs(hm2_region *region, uint64_t cycle) {
  * indefinitely, which is what the response watchdog is for.
  */
 uint64_t hm2_region_begin(hm2_region *region) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     uint64_t next =
         atomic_load_explicit((_Atomic uint64_t *)&shm->cycle, memory_order_relaxed) + 1;
 
@@ -257,7 +257,7 @@ uint64_t hm2_region_begin(hm2_region *region) {
  * outside it, which is the whole of why that append needed no new mechanism.
  */
 void hm2_region_publish(hm2_region *region, uint64_t cycle) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     atomic_store_explicit((_Atomic uint64_t *)&shm->cycle, cycle, memory_order_release);
 
     /*
@@ -287,7 +287,7 @@ void hm2_region_publish(hm2_region *region, uint64_t cycle) {
  * another's signals.
  */
 int hm2_region_collect(hm2_region *region, uint64_t *answered) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     uint64_t response =
         atomic_load_explicit((_Atomic uint64_t *)&shm->response, memory_order_acquire);
     *answered = response;
@@ -299,7 +299,7 @@ int hm2_region_collect(hm2_region *region, uint64_t *answered) {
 }
 
 uint32_t hm2_region_state(hm2_region *region) {
-    cnc_fieldbus_shm *shm = region->shm;
+    cnc_outboard_shm *shm = region->shm;
     return atomic_load_explicit((_Atomic uint32_t *)&shm->state, memory_order_acquire);
 }
 
@@ -310,7 +310,7 @@ void hm2_region_destroy(hm2_region *region) {
     /* Say so before going away, so the core reports a shutdown rather than a
        channel that simply stopped. It may not be looking, which is why it also
        has a watchdog. */
-    hm2_region_set_state(region, CNC_FIELDBUS_STATE_SHUTDOWN);
+    hm2_region_set_state(region, CNC_OUTBOARD_STATE_SHUTDOWN);
     munlock(region->base, region->bytes);
     munmap(region->base, region->bytes);
     if (region->owner) {
