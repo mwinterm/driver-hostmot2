@@ -339,7 +339,7 @@ int main(int argc, char **argv) {
     if (load_module(&generic, path, 1) != 0) {
         goto fail;
     }
-    snprintf(path, sizeof(path), "%s/libhm2_eth.so", module_dir);
+    snprintf(path, sizeof(path), "%s/lib%s.so", module_dir, config.transport);
     if (load_module(&transport, path, 0) != 0) {
         goto fail;
     }
@@ -385,9 +385,9 @@ int main(int argc, char **argv) {
     status = transport.app_main();
     if (status != 0) {
         hm2_log(HM2_LOG_ERROR,
-                "libhm2_eth failed to start: %d. The board_ip in %s is the first thing to "
-                "check, then whether anything else has the board open",
-                status, config_path);
+                "the %s transport failed to start: %d. The board's address in %s is the "
+                "first thing to check, then whether anything else has the board open",
+                config.transport, status, config_path);
         goto fail;
     }
     if (!hm2_shim_component_ready()) {

@@ -52,16 +52,25 @@ HM2_SRC := hostmot2.c tram.c pins.c ioport.c encoder.c abs_encoder.c resolver.c 
 # bench with one of those boards to try them on (ADR 0022 §9).
 ETH_SRC := hm2_eth.c hm2_eth_net_posix.c
 
+# A board that is not there: upstream's own fake, which shows the generic
+# driver a test pattern instead of an IDROM read off a card. It is what lets
+# the whole path -- module load, pin declaration, the region, the cycle -- be
+# exercised on a machine with no Mesa hardware in it, which is every machine
+# in CI (ADR 0022 §1).
+TEST_SRC := hm2_test.c
+
 SHIM_SRC := hal_shim.c rtapi_shim.c param_table.c
 HOST_SRC := main.c config.c region.c
 
 HM2_OBJ  := $(addprefix $(BUILD)/hm2/,$(HM2_SRC:.c=.o))
 ETH_OBJ  := $(addprefix $(BUILD)/eth/,$(ETH_SRC:.c=.o))
+TEST_OBJ := $(addprefix $(BUILD)/test/,$(TEST_SRC:.c=.o))
 SHIM_OBJ := $(addprefix $(BUILD)/shim/,$(SHIM_SRC:.c=.o))
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o))
 
 .PHONY: all clean
-all: $(BUILD)/hm2-host $(BUILD)/libhostmot2.so $(BUILD)/libhm2_eth.so
+all: $(BUILD)/hm2-host $(BUILD)/libhostmot2.so $(BUILD)/libhm2_eth.so \
+     $(BUILD)/libhm2_test.so
 
 $(BUILD)/libhm2shim.so: $(SHIM_OBJ)
 	@mkdir -p $(@D)
@@ -81,6 +90,14 @@ $(BUILD)/libhm2_eth.so: $(ETH_OBJ) $(BUILD)/libhostmot2.so
 $(BUILD)/hm2-host: $(HOST_OBJ) $(BUILD)/libhm2shim.so
 	@mkdir -p $(@D)
 	$(CC) -rdynamic -o $@ $(HOST_OBJ) -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS) -ldl -lrt
+
+$(BUILD)/libhm2_test.so: $(TEST_OBJ) $(BUILD)/libhostmot2.so
+	@mkdir -p $(@D)
+	$(CC) -shared -o $@ $(TEST_OBJ) -L$(BUILD) -lhostmot2 -lhm2shim $(LDFLAGS) $(LDLIBS)
+
+$(BUILD)/test/%.o: $(UPSTREAM)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/hm2/%.o: $(UPSTREAM)/%.c
 	@mkdir -p $(@D)

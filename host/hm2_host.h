@@ -85,6 +85,13 @@ void hm2_region_destroy(hm2_region *region);
  */
 typedef struct {
     char region[256];
+    /*
+     * Which transport module to load beside the generic driver: `hm2_eth` for
+     * an Ethernet board, `hm2_test` for the fake one upstream ships. The
+     * transports are separate LinuxCNC modules and always have been, so this
+     * is a name rather than a mode.
+     */
+    char transport[64];
     uint32_t axis_count;
     uint32_t cycle_us;
     uint32_t core_watchdog_cycles;

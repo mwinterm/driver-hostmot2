@@ -121,6 +121,7 @@ int hm2_config_load(hm2_config *config, const char *path) {
      * cycle, which is where ADR 0011's follow-up said to start from.
      */
     snprintf(config->region, sizeof(config->region), "%s", "/cnc-hm2-0");
+    snprintf(config->transport, sizeof(config->transport), "%s", "hm2_eth");
     config->axis_count = 3;
     config->cycle_us = 1000;
     config->core_watchdog_cycles = 100;
@@ -181,6 +182,8 @@ int hm2_config_load(hm2_config *config, const char *path) {
             }
         } else if (strcmp(key, "region") == 0) {
             snprintf(config->region, sizeof(config->region), "%s", value);
+        } else if (strcmp(key, "transport") == 0) {
+            snprintf(config->transport, sizeof(config->transport), "%s", value);
         } else if (strcmp(key, "axes") == 0) {
             config->axis_count = (uint32_t)strtoul(value, NULL, 0);
         } else if (strcmp(key, "cycle_us") == 0) {

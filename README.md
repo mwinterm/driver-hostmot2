@@ -56,6 +56,38 @@ way is X — is **not here**. That is the control's machine description, on the
 other side of the channel. Two files that both described the machine would be
 two files to disagree.
 
+## Running it without a Mesa card
+
+Upstream ships a fake board — `hm2_test`, which shows the generic driver a test
+pattern instead of an IDROM read off a card — and this repository builds it:
+
+```sh
+./build/hm2-host examples/test-board.conf build
+```
+
+That exercises the whole path: both modules load, the generic driver parses the
+IDROM and enumerates the board's pins, the shim collects them, and the host
+publishes them into a shared region and cycles. Test pattern 12 presents a
+24-pin GPIO board, which comes out as 72 HAL pins and 72 channel signals.
+
+Attach a control to the same region and the two halves meet:
+
+```yaml
+drivers:
+  - name: hm2
+    library: libcnc_driver_fieldbus.so
+    config:
+      axes: "3"
+      region: "/cnc-hm2-test"
+plc:
+  io:
+    lamp: hm2.hm2_test.0.gpio.000.out
+```
+
+What this does **not** exercise is the only thing that matters in the end: a
+real card answering a real packet in a real millisecond. Everything in the
+matrix below is still `untested`.
+
 ## Support matrix
 
 A function class is *supported* when it has a mapping on the control's side and
