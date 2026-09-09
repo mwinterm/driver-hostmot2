@@ -1,0 +1,38 @@
+NOTICE
+======
+
+This repository contains the HostMot2 driver for Mesa Electronics FPGA
+motion-control cards. The code was extracted from the LinuxCNC project
+and retains its full original commit history.
+
+Origin
+------
+
+  Upstream project : LinuxCNC
+  Upstream repo    : https://github.com/LinuxCNC/linuxcnc
+  Source path      : src/hal/drivers/mesa-hostmot2
+  Split from commit: 64efb28cd77a16b45ade81e576c784cdc574f40e
+  Commit date      : 2026-09-08
+  Commit subject   : Merge pull request #4506 from grandixximo/gmoccapy-early-sigterm
+  Extraction date  : 2026-09-09
+  Extraction method: git subtree split --prefix=src/hal/drivers/mesa-hostmot2
+
+The extracted tree is byte-for-byte identical to the upstream
+src/hal/drivers/mesa-hostmot2 directory at the commit named above
+(tree ebba780ae0204d8fa68a9e5f81d52f5a5b651d58).
+
+Licensing
+---------
+
+The inherited code is licensed under the GNU General Public License,
+version 2 or (at your option) any later version. See LICENSE for the
+full text. Individual source files carry their own copyright notices;
+those notices and the copyrights they record remain in force and are
+not superseded by this file.
+
+Copyright is held by the original LinuxCNC contributors, including
+Sebastian Kuzminsky and many others. See the commit history and the
+per-file headers for attribution.
+
+Changes made in this repository after the extraction commit are not
+part of the LinuxCNC project and should not be reported to LinuxCNC.
