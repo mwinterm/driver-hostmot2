@@ -44,3 +44,17 @@ per-file headers for attribution.
 
 Changes made in this repository after the extraction commit are not
 part of the LinuxCNC project and should not be reported to LinuxCNC.
+
+Vendored LinuxCNC headers
+-------------------------
+
+shim/include/linuxcnc/ holds the HAL and RTAPI headers the driver is
+written against, copied from the same upstream commit recorded above so
+that third_party/linuxcnc/ compiles unmodified (ADR 0022 §4). They are
+unchanged. Their licenses are the ones upstream gives them, per file:
+
+  hal.h, rtapi.h                       LGPL-2.0-or-later
+  every other rtapi_*.h                GPL-2.0-or-later
+
+Everything else in shim/ and host/ is this repository's own work, under
+GPL-2.0-or-later like the driver it hosts.
