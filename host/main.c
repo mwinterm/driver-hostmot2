@@ -263,19 +263,74 @@ static uint32_t channel_role(const char *name, hm2_shim_type type) {
     return type == HM2_SHIM_BOOL ? CNC_OUTBOARD_ROLE_DIGITAL : CNC_OUTBOARD_ROLE_ANALOG;
 }
 
+/* The channel's own spellings, for the table below. */
+static const char *type_name(uint32_t type) {
+    switch (type) {
+    case CNC_OUTBOARD_SIGNAL_BOOL: return "bool";
+    case CNC_OUTBOARD_SIGNAL_I32: return "i32";
+    case CNC_OUTBOARD_SIGNAL_F64: return "f64";
+    }
+    return "?";
+}
+
+static const char *role_name(uint32_t role) {
+    switch (role) {
+    case CNC_OUTBOARD_ROLE_DIGITAL: return "digital";
+    case CNC_OUTBOARD_ROLE_ANALOG: return "analog";
+    case CNC_OUTBOARD_ROLE_POSITION: return "position";
+    case CNC_OUTBOARD_ROLE_VELOCITY: return "velocity";
+    case CNC_OUTBOARD_ROLE_TORQUE: return "torque";
+    case CNC_OUTBOARD_ROLE_STATUS_WORD: return "status-word";
+    case CNC_OUTBOARD_ROLE_CONTROL_WORD: return "control-word";
+    case CNC_OUTBOARD_ROLE_ENCODER_COUNT: return "encoder-count";
+    case CNC_OUTBOARD_ROLE_PROBE_LATCH: return "probe-latch";
+    case CNC_OUTBOARD_ROLE_FAST_DIGITAL: return "fast-digital";
+    }
+    return "?";
+}
+
+/*
+ * One line per signal, under the name the other side has to say.
+ *
+ * A count is not enough, and that is not a matter of taste. The machine
+ * description on the far side names these pins as text -- `axis.0.position_fb:
+ * hm2_7i76e.0.stepgen.00.position-fb` -- and a name that does not match is
+ * refused at start-up with nothing to compare it against, because the count
+ * this process used to print says only how many there were. The names depend
+ * on the board, on which sserial devices answered, and on how many characters
+ * of the board name the transport copied, so they cannot be derived from the
+ * configuration either: they have to be read from the process that made them.
+ *
+ * At INFO rather than DEBUG because this runs once, before the cycle starts,
+ * and because the run that needs it is the one nobody planned to debug. It is
+ * a few hundred lines on a fully populated card, once per start, and it is the
+ * record of what the card actually presented that day.
+ */
+static void log_declared(size_t index, const char *name, const char *direction, uint32_t type,
+                         uint32_t role, size_t value_index) {
+    hm2_log(HM2_LOG_INFO, "  signal %3zu %-3s %-7s %-13s value %3zu  %s", index, direction,
+            type_name(type), role_name(role), value_index, name);
+}
+
 static void declare_signals(hm2_region *region) {
     size_t index = 0;
     for (size_t i = 0; i < bound_input_count; i++) {
         const hm2_shim_signal *signal = bound_inputs[i].signal;
-        hm2_region_declare(region, index++, signal->name, CNC_OUTBOARD_SIGNAL_INPUT,
-                           channel_type(signal->type), channel_role(signal->name, signal->type),
+        uint32_t type = channel_type(signal->type);
+        uint32_t role = channel_role(signal->name, signal->type);
+        size_t slot = index++;
+        hm2_region_declare(region, slot, signal->name, CNC_OUTBOARD_SIGNAL_INPUT, type, role,
                            CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_inputs[i].value_index);
+        log_declared(slot, signal->name, "in", type, role, bound_inputs[i].value_index);
     }
     for (size_t i = 0; i < bound_output_count; i++) {
         const hm2_shim_signal *signal = bound_outputs[i].signal;
-        hm2_region_declare(region, index++, signal->name, CNC_OUTBOARD_SIGNAL_OUTPUT,
-                           channel_type(signal->type), channel_role(signal->name, signal->type),
+        uint32_t type = channel_type(signal->type);
+        uint32_t role = channel_role(signal->name, signal->type);
+        size_t slot = index++;
+        hm2_region_declare(region, slot, signal->name, CNC_OUTBOARD_SIGNAL_OUTPUT, type, role,
                            CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_outputs[i].value_index);
+        log_declared(slot, signal->name, "out", type, role, bound_outputs[i].value_index);
     }
 }
 

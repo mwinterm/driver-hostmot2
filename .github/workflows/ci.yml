@@ -64,6 +64,21 @@ jobs:
           grep -qE 'region /cnc-hm2-test: [0-9]+ signal' /tmp/host.log \
             || { echo "the region was never created" >&2; exit 1; }
 
+          # By name, one line per signal. The machine description on the other
+          # side names these pins as text, so a count cannot be checked against
+          # it -- and the names depend on the board and on which sserial
+          # devices answered, so they cannot be derived from a configuration
+          # file either.
+          grep -qE 'signal +[0-9]+ in +bool .*hm2_test\.0\.gpio\.000\.in$' /tmp/host.log \
+            || { echo "the published signals were not logged by name" >&2; exit 1; }
+
+          # The value index is dense *within a direction*, which is the
+          # channel's rule and the one thing a reader of the table must not
+          # infer from its order: the first output carries value index 0 while
+          # sitting well down the table.
+          grep -qE 'signal +[0-9]+ out .* value +0 +hm2_test\.0\.gpio\.000\.out$' /tmp/host.log \
+            || { echo "the value index is not dense within its direction" >&2; exit 1; }
+
           # With no control attached it gives up and lets the FPGA watchdog
           # bite, which is the behaviour ADR 0011 §5 asks for and the one a
           # machine depends on when the control goes away.
