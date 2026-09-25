@@ -194,13 +194,24 @@ void rtapi_delay(long int nsec) {
 }
 
 /*
- * Which task is running. There is one, and it is the cycle thread.
+ * Which task is running: -1 until the host enters its cycle, 0 from then on.
  *
  * The driver uses it only to tell "in a cyclic function" from "not", which
- * this host knows for certain by other means, so a constant is honest here in
- * a way it would not be under a real RTAPI.
+ * this host knows for certain, so a flag the host sets is honest here in a
+ * way it would not be under a real RTAPI. It has to be -1 during start-up,
+ * as it is in LinuxCNC, where `rtapi_app_main` runs outside any task:
+ * `hm2_eth` sends a write at once outside a task and only queues it inside
+ * one, to go out with the cycle's packet. Answering 0 from the start made
+ * every set-up write a queued one that nothing flushed, and on a real card
+ * the queue filled during the Smart Serial discovery -- `enqueue_write:
+ * buffer full`, hundreds of thousands of times -- and the 7I76 never came
+ * up. The fake board has no transport queue, which is why CI never saw it.
  */
-int rtapi_task_self(void) { return 0; }
+static int cycle_task = -1;
+
+void hm2_shim_enter_cycle(void) { cycle_task = 0; }
+
+int rtapi_task_self(void) { return cycle_task; }
 
 /* ---------------------------------------------------------------------------
  * Argument splitting

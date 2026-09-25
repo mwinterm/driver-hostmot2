@@ -14,8 +14,9 @@
  *
  *     1. take the core's answered outputs -- or the last complete set, if the
  *        core has not finished -- into the driver's pins;
- *     2. call the driver's write function: setpoints out, watchdog petted;
- *     3. call its read function: one LBP16 round trip over UDP;
+ *     2. call the driver's read function: one LBP16 round trip over UDP;
+ *     3. call its write function: setpoints out, watchdog petted, the next
+ *        Smart Serial transaction started -- last, so it has the period;
  *     4. publish the driver's pins as the next cycle, and wake the core.
  *
  *   The round trip is what makes this a 1 ms-class interface, and the process
@@ -505,6 +506,7 @@ int main(int argc, char **argv) {
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
     ask_for_realtime(&config);
+    hm2_shim_enter_cycle();
 
     const long long period_ns = (long long)config.cycle_us * 1000LL;
     const long long send_ns = (long long)(period_ns * config.send_deadline);
@@ -545,16 +547,21 @@ int main(int argc, char **argv) {
         }
 
         /*
-         * 2. and 3. The driver's own cycle: write, then read.
+         * 2. and 3. The driver's own cycle: read, then write.
          *
-         * In that order, and it is the order LinuxCNC's HAL file uses. The
-         * write puts this cycle's setpoints into the outgoing packet and pets
-         * the watchdog; the read is the round trip that brings the answer
-         * back. Reading first would publish feedback one cycle older than the
-         * setpoints beside it.
+         * In that order, and it is the order a LinuxCNC HAL file uses: the
+         * read first in the servo thread, the write last. The read is the
+         * round trip that brings the card's state back; the write puts this
+         * cycle's setpoints into the outgoing packet, pets the watchdog and
+         * starts the next Smart Serial transaction by setting its DoIt bit.
+         * That transaction then has the whole period to finish before the
+         * next read looks for it. Write-then-read back to back gave it tens of
+         * microseconds: on a 7I76EU every read found DoIt still set, the
+         * driver counted a comms error per cycle and stopped the port after
+         * 200 -- and with it every field input and output on the card.
          */
-        write->funct(write->arg, (long)period_ns);
         read->funct(read->arg, (long)period_ns);
+        write->funct(write->arg, (long)period_ns);
 
         /* 4. Publish, and wake the core. */
         uint64_t cycle = hm2_region_begin(&region);

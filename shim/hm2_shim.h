@@ -219,6 +219,14 @@ size_t hm2_shim_arena_size(void);
  */
 size_t hm2_shim_unclaimed_params(const char **into, size_t capacity);
 
+/*
+ * The host is about to run its cycle. From here on `rtapi_task_self` answers
+ * 0, as it does inside a LinuxCNC servo thread, and before it -1, as it does
+ * in `rtapi_app_main`; the transport sends immediately outside a task and
+ * queues for the cycle's packet inside one.
+ */
+void hm2_shim_enter_cycle(void);
+
 #ifdef __cplusplus
 }
 #endif
