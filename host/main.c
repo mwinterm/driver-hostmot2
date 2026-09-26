@@ -496,6 +496,18 @@ int main(int argc, char **argv) {
     };
     hm2_region_describe(&region, &header);
     declare_signals(&region);
+    /*
+     * Every output's own value, before a core can attach (channel 2.1.0): what
+     * the driver set each pin to, and what it holds with nobody driving it. The
+     * core starts every output its machine description does not drive from
+     * here. Without it, it wrote zero onto them all -- and a Smart Serial
+     * port's `run`, which the driver defaults to true, stopped the port and
+     * every field input and output of a 7I76 with it.
+     */
+    for (size_t i = 0; i < bound_output_count; i++) {
+        hm2_region_seed_output(&region, bound_outputs[i].value_index,
+                               hm2_shim_cell_get(bound_outputs[i].signal));
+    }
     hm2_region_set_state(&region, CNC_OUTBOARD_STATE_RUNNING);
 
     hm2_log(HM2_LOG_INFO,

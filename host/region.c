@@ -221,6 +221,25 @@ const double *hm2_region_outputs(hm2_region *region, uint64_t cycle) {
 }
 
 /*
+ * Writes an output's own starting value into both halves of the output block
+ * (channel 2.1.0), so a core that drives nothing onto it starts from this
+ * rather than from zero. Only before the state goes RUNNING, while no core can
+ * be answering: after that, the output halves are the core's to write.
+ */
+void hm2_region_seed_output(hm2_region *region, size_t index, double value) {
+    if (index >= region->block.output_count) {
+        return;
+    }
+    for (uint64_t parity = 0; parity < 2; parity++) {
+        double *half =
+            value_half(region, region->block.output_offset, region->block.output_stride, parity);
+        if (half) {
+            half[index] = value;
+        }
+    }
+}
+
+/*
  * Begins a cycle: the guard, and where to write.
  *
  * Returns the cycle number, or 0 if the core has not finished the previous one.

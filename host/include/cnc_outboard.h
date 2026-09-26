@@ -73,8 +73,26 @@ extern "C" {
  * changes that leave every existing offset alone are minor.
  */
 #define CNC_OUTBOARD_ABI_VERSION_MAJOR 2
-#define CNC_OUTBOARD_ABI_VERSION_MINOR 0
+#define CNC_OUTBOARD_ABI_VERSION_MINOR 1
 #define CNC_OUTBOARD_ABI_VERSION_PATCH 0
+
+/*
+ * 2.1.0 gave the output value block a starting value. A process may write
+ * each named output's own value -- what its driver would hold with nobody
+ * driving it -- into *both* halves of the output block before it sets the
+ * state to RUNNING, and the core starts every named output it does not drive
+ * from what it finds there, rather than from zero. An output the machine
+ * description drives (an axis's command or enable, a `plc.io` point) is
+ * written by the core from its first cycle as before.
+ *
+ * It is what makes a configuration pin survive the core attaching. HostMot2
+ * publishes its Smart Serial port's `run` as an output defaulting to true,
+ * and the core, driving nothing onto it, wrote zero every cycle: the port
+ * stopped, and every field input and output of a 7I76 with it. No offset and
+ * no byte of the layout moved; a 2.0.0 process leaves zeros there, which a
+ * 2.1.0 core starts from exactly as a 2.0.0 core did, and a 2.1.0 process's
+ * values are ignored by a 2.0.0 core. Hence minor.
+ */
 
 /*
  * 2.0.0 renamed every symbol here from CNC_FIELDBUS_* and cnc_fieldbus_*, and

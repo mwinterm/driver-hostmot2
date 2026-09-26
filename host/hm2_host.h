@@ -61,6 +61,7 @@ void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint
 void hm2_region_set_state(hm2_region *region, uint32_t state);
 double *hm2_region_inputs(hm2_region *region, uint64_t cycle);
 const double *hm2_region_outputs(hm2_region *region, uint64_t cycle);
+void hm2_region_seed_output(hm2_region *region, size_t index, double value);
 uint64_t hm2_region_begin(hm2_region *region);
 void hm2_region_publish(hm2_region *region, uint64_t cycle);
 int hm2_region_collect(hm2_region *region, uint64_t *answered);
