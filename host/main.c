@@ -34,7 +34,9 @@
  */
 #include <dlfcn.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sched.h>
+#include <stdatomic.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -56,6 +58,78 @@ static const char *const level_name[] = {"", "ERROR", "WARN", "INFO", "DEBUG", "
 
 void hm2_log_set_level(int level) { log_level = level; }
 
+/*
+ * The log, once the cycle runs: a ring the cycle's thread writes lines into and
+ * a writer thread of ordinary priority drains to stderr, so the cycle never
+ * waits for a disk. stderr is a file on the machine's SD card, and on the
+ * control's side a log line written from the servo thread during a burst of
+ * disk writes blocked it for 1.7 s (the control's ADR 0046). This process is
+ * the control's clock, and the driver logs from inside the cycle -- a late
+ * reply is a line -- so the same write here would stop both.
+ *
+ * One producer, the thread that runs the cycle (this process has no other that
+ * logs), and one consumer, so two counters and no lock. A line the ring has no
+ * room for is dropped and counted, never waited for; the writer says how many
+ * when it next writes. Before the writer starts and after it stops, a line goes
+ * straight to stderr: start-up's few hundred lines -- the signal table among
+ * them, the record of what the card presented -- are worth waiting for.
+ */
+#define LOG_SLOTS 256
+#define LOG_LINE 512
+static char log_ring[LOG_SLOTS][LOG_LINE];
+static atomic_size_t log_head;
+static atomic_size_t log_tail;
+static atomic_ullong log_dropped;
+static atomic_int log_ringed;
+static atomic_int log_stop;
+static pthread_t log_thread;
+
+static void *log_writer(void *unused) {
+    (void)unused;
+    unsigned long long reported = 0;
+    for (;;) {
+        size_t tail = atomic_load_explicit(&log_tail, memory_order_relaxed);
+        size_t head = atomic_load_explicit(&log_head, memory_order_acquire);
+        for (; tail != head; tail++) {
+            fputs(log_ring[tail % LOG_SLOTS], stderr);
+            atomic_store_explicit(&log_tail, tail + 1, memory_order_release);
+        }
+        unsigned long long dropped = atomic_load(&log_dropped);
+        if (dropped != reported) {
+            fprintf(stderr, "%llu log line(s) dropped: the writer could not keep up\n",
+                    dropped - reported);
+            reported = dropped;
+        }
+        fflush(stderr);
+        if (atomic_load(&log_stop) &&
+            atomic_load_explicit(&log_head, memory_order_acquire) == tail) {
+            return NULL;
+        }
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+        nanosleep(&pause, NULL);
+    }
+}
+
+/*
+ * Starts the writer. Before the process takes its real-time priority and its
+ * CPU, so the writer inherits neither: it runs where ordinary work runs.
+ */
+static void log_to_ring(void) {
+    if (pthread_create(&log_thread, NULL, log_writer, NULL) == 0) {
+        atomic_store(&log_ringed, 1);
+    }
+}
+
+/* Drains the ring and stops the writer; lines go straight out again. */
+static void log_from_ring(void) {
+    if (!atomic_load(&log_ringed)) {
+        return;
+    }
+    atomic_store(&log_stop, 1);
+    pthread_join(log_thread, NULL);
+    atomic_store(&log_ringed, 0);
+}
+
 void hm2_log(int level, const char *fmt, ...) {
     if (level > log_level) {
         return;
@@ -67,15 +141,36 @@ void hm2_log(int level, const char *fmt, ...) {
     char when[32];
     strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%S", &parts);
 
-    /* stderr, line-buffered, so this interleaves correctly with whatever is
-       collecting the core's own log beside it. */
-    fprintf(stderr, "%s.%06ldZ %-5s hm2-host: ", when, now.tv_nsec / 1000,
-            level_name[level < 6 ? level : 5]);
+    char line[LOG_LINE];
+    int used = snprintf(line, sizeof(line), "%s.%06ldZ %-5s hm2-host: ", when,
+                        now.tv_nsec / 1000, level_name[level < 6 ? level : 5]);
+    if (used < 0 || (size_t)used >= sizeof(line) - 1) {
+        used = 0;
+    }
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    int message = vsnprintf(line + used, sizeof(line) - (size_t)used - 1, fmt, args);
     va_end(args);
-    fputc('\n', stderr);
+    size_t length = (size_t)used + (message < 0 ? 0 : (size_t)message);
+    if (length > sizeof(line) - 2) {
+        length = sizeof(line) - 2; /* cut, and say so with the newline kept */
+    }
+    line[length] = '\n';
+    line[length + 1] = '\0';
+
+    if (!atomic_load(&log_ringed)) {
+        /* stderr, so this interleaves with whatever collects the core's log. */
+        fputs(line, stderr);
+        return;
+    }
+    size_t head = atomic_load_explicit(&log_head, memory_order_relaxed);
+    size_t tail = atomic_load_explicit(&log_tail, memory_order_acquire);
+    if (head - tail >= LOG_SLOTS) {
+        atomic_fetch_add(&log_dropped, 1);
+        return;
+    }
+    memcpy(log_ring[head % LOG_SLOTS], line, length + 2);
+    atomic_store_explicit(&log_head, head + 1, memory_order_release);
 }
 
 /* The shim's messages, and the driver's, through the same place. */
@@ -721,6 +816,7 @@ int main(int argc, char **argv) {
             (unsigned long long)region.shm->config.generation);
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
+    log_to_ring();
     ask_for_realtime(&config);
     hm2_shim_enter_cycle();
 
@@ -986,6 +1082,7 @@ int main(int argc, char **argv) {
         generic.app_exit();
     }
     hm2_shim_flush_log();
+    log_from_ring();
     hm2_region_destroy(&region);
     free(bound_inputs);
     free(bound_outputs);
@@ -1002,6 +1099,7 @@ fail:
         generic.app_exit();
     }
     hm2_shim_flush_log();
+    log_from_ring();
     free(bound_inputs);
     free(bound_outputs);
     free(fixed_pins);
