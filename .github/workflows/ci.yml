@@ -46,7 +46,7 @@ jobs:
       # machine with no Mesa hardware in it.
       - name: the host runs the driver against the fake board
         run: |
-          timeout 30 ./build/hm2-host examples/test-board.conf build \
+          timeout 10 ./build/hm2-host examples/test-board.conf build \
             > /tmp/host.log 2>&1 || true
           cat /tmp/host.log
 
@@ -79,11 +79,17 @@ jobs:
           grep -qE 'signal +[0-9]+ out .* value +0 +hm2_test\.0\.gpio\.000\.out$' /tmp/host.log \
             || { echo "the value index is not dense within its direction" >&2; exit 1; }
 
-          # With no control attached it gives up and lets the FPGA watchdog
-          # bite, which is the behaviour ADR 0011 §5 asks for and the one a
-          # machine depends on when the control goes away.
-          grep -q 'letting the FPGA watchdog bite' /tmp/host.log \
-            || { echo "the response watchdog never fired" >&2; exit 1; }
+          # With no control attached it keeps cycling and does not let the
+          # FPGA watchdog bite: until a control has answered, every output is
+          # still the value this process seeded it with, so there is nothing a
+          # silent control could leave on the machine. The response watchdog
+          # counts from the control's first answer (ADR 0011 §5), which is
+          # when a control that goes quiet leaves its last setpoints behind;
+          # that path needs a control, and the control's own CI runs it.
+          if grep -q 'letting the FPGA watchdog bite' /tmp/host.log; then
+            echo "the response watchdog fired with no control ever attached" >&2
+            exit 1
+          fi
 
       # A `pin.` line fixes a pin the driver only reads, and publishes it for
       # reading only (channel 2.2.0, the control's ADR 0045 §2). Everything
