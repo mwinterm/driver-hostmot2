@@ -529,6 +529,18 @@ int main(int argc, char **argv) {
     uint64_t unanswered = 0;
     uint64_t stale = 0;
     int drives_dropped = 0;
+    /*
+     * Whether the core has ever answered. Until it has, nothing has been
+     * commanded: every output is still the value this process seeded it with
+     * (region.c), so there is nothing a silent core could leave on the
+     * machine, and its silence is not counted. From its first answer on it is:
+     * a core that then stops answering leaves its last setpoints on the
+     * drives -- on an analog servo machine, a velocity -- and
+     * `response_watchdog_cycles` is how long that may last. Counting from the
+     * first cycle instead forced a machine's start script to give the core a
+     * minute to attach, which is a minute of a dead core's last velocity.
+     */
+    int attached = 0;
 
     while (!stopping) {
         add_ns(&next, period_ns);
@@ -555,6 +567,11 @@ int main(int argc, char **argv) {
             }
             if (freshness == HM2_COLLECT_STALE) {
                 stale++;
+            }
+            if (!attached) {
+                attached = 1;
+                hm2_log(HM2_LOG_INFO, "the core has attached; from now on %u unanswered cycle(s) "
+                        "let the FPGA watchdog bite", config.response_watchdog_cycles);
             }
         }
 
@@ -583,7 +600,9 @@ int main(int argc, char **argv) {
              * repeat the last complete output, which is what happens by doing
              * nothing -- the driver keeps the setpoints it has.
              */
-            unanswered++;
+            if (attached) {
+                unanswered++;
+            }
             if (!drives_dropped && config.response_watchdog_cycles > 0 &&
                 unanswered >= config.response_watchdog_cycles) {
                 /*

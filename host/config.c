@@ -116,7 +116,9 @@ int hm2_config_load(hm2_config *config, const char *path) {
      *
      * The watchdogs are ADR 0011's: the core gives up on a channel after
      * `core_watchdog_cycles`, this process takes the drives down after
-     * `response_watchdog_cycles` unanswered, and `drive_watchdog_us` is the
+     * `response_watchdog_cycles` unanswered -- counted from the core's first
+     * answer, so a core may take as long as it needs to attach -- and
+     * `drive_watchdog_us` is the
      * stop of last resort the FPGA's own watchdog provides -- ten times the
      * cycle, which is where ADR 0011's follow-up said to start from.
      */
