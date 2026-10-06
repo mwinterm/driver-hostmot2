@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "cnc_outboard.h"
 
@@ -51,6 +52,8 @@ typedef struct {
     uint32_t drive_watchdog_us;
     uint32_t spin_iterations;
     uint64_t worst_case_cycle_ns;
+    /* CNC_OUTBOARD_CONFIG_* (channel 2.3.0). */
+    uint32_t flags;
 } hm2_region_config;
 
 size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out);
@@ -68,6 +71,13 @@ uint64_t hm2_region_begin(hm2_region *region);
 void hm2_region_set_bus(hm2_region *region, uint64_t cycle, uint32_t state, uint32_t fault);
 void hm2_region_publish(hm2_region *region, uint64_t cycle);
 int hm2_region_collect(hm2_region *region, uint64_t *answered);
+/* The newest cycle the core has answered; 0 before its first answer. */
+uint64_t hm2_region_answered(hm2_region *region);
+/*
+ * Waits for the core to answer `cycle`, until `deadline` on CLOCK_MONOTONIC
+ * (channel 2.3.0, ADR 0046 §1). Returns 1 if it did, 0 if the deadline came.
+ */
+int hm2_region_wait_answer(hm2_region *region, uint64_t cycle, const struct timespec *deadline);
 uint32_t hm2_region_state(hm2_region *region);
 void hm2_region_destroy(hm2_region *region);
 
@@ -111,6 +121,12 @@ typedef struct {
     uint64_t worst_case_cycle_ns;
     /* How far into the period the outputs go on the wire, 0..1. */
     double send_deadline;
+    /*
+     * Whether the core's answer is written in the period it was published in
+     * (ADR 0046): read, publish, wait for the answer until the send deadline,
+     * write. Off, the period writes the answer to the previous publish.
+     */
+    int same_cycle;
     size_t arena_bytes;
     size_t max_signals;
     size_t max_functs;

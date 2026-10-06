@@ -73,8 +73,18 @@ extern "C" {
  * changes that leave every existing offset alone are minor.
  */
 #define CNC_OUTBOARD_ABI_VERSION_MAJOR 2
-#define CNC_OUTBOARD_ABI_VERSION_MINOR 2
+#define CNC_OUTBOARD_ABI_VERSION_MINOR 3
 #define CNC_OUTBOARD_ABI_VERSION_PATCH 0
+
+/*
+ * 2.3.0 (ADR 0046) let a process write the core's answer in the cycle it
+ * published: `flags` in the configuration, in what was its reserved word, and
+ * CNC_OUTBOARD_CONFIG_SAME_CYCLE in it. Such a process waits for the answer
+ * after publishing, until its send deadline, and the core wakes `futex_word`
+ * after each answer so the wait is a sleep rather than a spin. No offset moved;
+ * a 2.2.0 process leaves zero there and is neither waited on nor woken. Hence
+ * minor.
+ */
 
 /*
  * 2.2.0 (ADR 0045) let a process say three things about its hardware that
@@ -580,7 +590,11 @@ typedef struct cnc_outboard_config {
    * Zero by default: pay for the syscall until measurement says otherwise.
    */
   uint32_t spin_iterations;
-  uint32_t reserved;
+  /*
+   * CNC_OUTBOARD_CONFIG_* bits (2.3.0, below). Zero in a 2.2.0 region. A bit
+   * this build does not know is refused at attach.
+   */
+  uint32_t flags;
   /*
    * Worst-case duration of the process's own cyclic work [ns]. Added in 1.1.0;
    * zero means a process that does not declare one.
@@ -600,6 +614,23 @@ typedef struct cnc_outboard_config {
    */
   uint64_t worst_case_cycle_ns;
 } cnc_outboard_config;
+
+/*
+ * The process writes the core's answer in the cycle it published (2.3.0, ADR
+ * 0046): it reads its hardware, publishes cycle n, waits for the answer to n
+ * until its send deadline, and writes that -- or the last complete answer, if
+ * n's is late -- in the same period. Without it the process writes, in period
+ * n, the answer to n-1, and a sample reaches the hardware's outputs a period
+ * later.
+ *
+ * The core bumps `futex_word` and wakes it after every answer to a process that
+ * sets this, so the process can sleep on it. The word stays a hint in this
+ * direction too: the process checks `response` before and after.
+ */
+#define CNC_OUTBOARD_CONFIG_SAME_CYCLE (1u << 0)
+
+/* Every bit this version defines. */
+#define CNC_OUTBOARD_CONFIG_FLAGS_KNOWN CNC_OUTBOARD_CONFIG_SAME_CYCLE
 
 /* -------------------------------------------------------------------------
  * The region
@@ -656,6 +687,11 @@ typedef struct cnc_outboard_shm {
    * `cycle` unchanged and goes back to sleep, and a missed wake is caught by
    * the next one. That is what lets the notification be replaced without
    * revisiting any of the ordering above.
+   *
+   * The process bumps and wakes it after publishing; from 2.3.0 the core also
+   * does after answering, for a process with CNC_OUTBOARD_CONFIG_SAME_CYCLE,
+   * which sleeps on it waiting for `response`. One word for both directions,
+   * because each side waits on it only while the other is the one to move.
    */
   alignas(CNC_OUTBOARD_CACHE_LINE) uint32_t futex_word;
   /* cnc_outboard_channel_state. */

@@ -5,8 +5,8 @@ repository (ADR 0022 §8: this repository vendors it and says which version).
 
     Upstream repo : https://github.com/mwinterm/LibreCNC
     Path          : crates/cnc-outboard-abi/include/cnc_outboard.h
-    Channel version: 2.2.0
-    Copied from commit: 032fd5d4218d8266b800bd89a2a75e0b0aea1f77 (LeafCNC branch feature/mikron-wf41c, ADR 0045)
+    Channel version: 2.3.0
+    Copied from commit: b1ac0d8d817d105c1130f4fc1a90984048631ec5 (LeafCNC branch feature/same-cycle, ADR 0046)
     Copied on     : 2026-10-07
 
 It is **Apache-2.0 OR MIT**, which is why this GPL-2.0 repository may compile

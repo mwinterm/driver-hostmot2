@@ -173,6 +173,7 @@ void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
     shm->config.sync_manager_watchdog_us = config->drive_watchdog_us;
     shm->config.spin_iterations = config->spin_iterations;
     shm->config.worst_case_cycle_ns = config->worst_case_cycle_ns;
+    shm->config.flags = config->flags;
 
     if (region->block.count > 0) {
         cnc_outboard_signal_block *block =
@@ -328,6 +329,40 @@ int hm2_region_collect(hm2_region *region, uint64_t *answered) {
     }
     uint64_t cycle = atomic_load_explicit((_Atomic uint64_t *)&shm->cycle, memory_order_relaxed);
     return response == cycle ? HM2_COLLECT_FRESH : HM2_COLLECT_STALE;
+}
+
+uint64_t hm2_region_answered(hm2_region *region) {
+    cnc_outboard_shm *shm = region->shm;
+    return atomic_load_explicit((_Atomic uint64_t *)&shm->response, memory_order_acquire);
+}
+
+/*
+ * Waits for the core's answer to `cycle` (channel 2.3.0, ADR 0046 §1).
+ *
+ * The core bumps the futex word and wakes it after answering a process that
+ * says it waits. The word is a hint here as it is the other way: the value is
+ * loaded before `response` is checked, so an answer that lands between the
+ * check and the syscall changes the word and the kernel returns at once, and
+ * a wake that is missed is caught by the deadline.
+ */
+int hm2_region_wait_answer(hm2_region *region, uint64_t cycle, const struct timespec *deadline) {
+    cnc_outboard_shm *shm = region->shm;
+    for (;;) {
+        uint32_t expected =
+            atomic_load_explicit((_Atomic uint32_t *)&shm->futex_word, memory_order_acquire);
+        if (hm2_region_answered(region) >= cycle) {
+            return 1;
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long left = (long long)(deadline->tv_sec - now.tv_sec) * 1000000000LL +
+                         (deadline->tv_nsec - now.tv_nsec);
+        if (left <= 0) {
+            return 0;
+        }
+        struct timespec timeout = {.tv_sec = left / 1000000000LL, .tv_nsec = left % 1000000000LL};
+        syscall(SYS_futex, &shm->futex_word, FUTEX_WAIT, expected, &timeout, NULL, 0);
+    }
 }
 
 uint32_t hm2_region_state(hm2_region *region) {

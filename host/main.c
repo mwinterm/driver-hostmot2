@@ -211,6 +211,22 @@ static size_t bound_input_count;
 static bound_signal *bound_outputs;
 static size_t bound_output_count;
 
+/*
+ * What this process measures of itself (ADR 0046 §4), published as inputs
+ * after the driver's own, under names no HAL pin has. In SI, as everything on
+ * the channel is: seconds, and a count.
+ */
+enum { HOST_READ_TIME, HOST_ANSWER_TIME, HOST_ANSWERS_LATE, HOST_SIGNALS };
+static const struct {
+    const char *name;
+    uint32_t type;
+    uint32_t unit;
+} host_signals[HOST_SIGNALS] = {
+    {"hm2-host.read-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
+    {"hm2-host.answer-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
+    {"hm2-host.answers-late", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
+};
+
 /* The pins `pin.` lines fixed, so binding publishes them for reading only. */
 static const hm2_shim_signal **fixed_pins;
 static size_t fixed_pin_count;
@@ -446,6 +462,15 @@ static void declare_signals(hm2_region *region) {
         log_declared(slot, signal->name, "in", type, role, bound_inputs[i].value_index,
                      bound_inputs[i].flags);
     }
+    for (size_t i = 0; i < HOST_SIGNALS; i++) {
+        size_t slot = index++;
+        size_t value_index = bound_input_count + i;
+        hm2_region_declare(region, slot, host_signals[i].name, CNC_OUTBOARD_SIGNAL_INPUT,
+                           host_signals[i].type, CNC_OUTBOARD_ROLE_ANALOG, host_signals[i].unit,
+                           (uint32_t)value_index, 0u);
+        log_declared(slot, host_signals[i].name, "in", host_signals[i].type,
+                     CNC_OUTBOARD_ROLE_ANALOG, value_index, 0u);
+    }
     for (size_t i = 0; i < bound_output_count; i++) {
         const hm2_shim_signal *signal = bound_outputs[i].signal;
         uint32_t type = channel_type(signal->type);
@@ -457,6 +482,54 @@ static void declare_signals(hm2_region *region) {
         log_declared(slot, signal->name, "out", type, role, bound_outputs[i].value_index,
                      bound_outputs[i].flags);
     }
+}
+
+/*
+ * The newest complete answer from the core, into the driver's pins.
+ *
+ * Indexed by the cycle the outputs actually came from rather than the current
+ * one: those differ exactly when the core is late, which is the case this has
+ * to be right for.
+ */
+static void take_answer(hm2_region *region, int *attached, uint64_t *stale,
+                        uint32_t response_watchdog_cycles) {
+    uint64_t answered = 0;
+    int freshness = hm2_region_collect(region, &answered);
+    if (freshness != HM2_COLLECT_FRESH && freshness != HM2_COLLECT_STALE) {
+        return;
+    }
+    const double *values = hm2_region_outputs(region, answered);
+    if (values) {
+        for (size_t i = 0; i < bound_output_count; i++) {
+            double value = values[bound_outputs[i].value_index];
+            /*
+             * A pin the driver writes too is the core's only when the core
+             * changes it (ADR 0045 §1): written every cycle, the core's held
+             * zero undid a watchdog bite the cycle after it happened. A stale
+             * answer repeats the last one, which is no change, so a write is
+             * applied once.
+             */
+            if (bound_outputs[i].flags & CNC_OUTBOARD_SIGNAL_ON_CHANGE) {
+                if (value == bound_outputs[i].last) {
+                    continue;
+                }
+                bound_outputs[i].last = value;
+            }
+            hm2_shim_cell_set(bound_outputs[i].signal, value);
+        }
+    }
+    if (freshness == HM2_COLLECT_STALE) {
+        (*stale)++;
+    }
+    if (!*attached) {
+        *attached = 1;
+        hm2_log(HM2_LOG_INFO, "the core has attached; from now on %u unanswered cycle(s) "
+                "let the FPGA watchdog bite", response_watchdog_cycles);
+    }
+}
+
+static double seconds_between(const struct timespec *from, const struct timespec *to) {
+    return (double)(to->tv_sec - from->tv_sec) + (double)(to->tv_nsec - from->tv_nsec) * 1e-9;
 }
 
 /* ---------------------------------------------------------------------------
@@ -609,7 +682,8 @@ int main(int argc, char **argv) {
     }
 
     hm2_region region;
-    if (hm2_region_create(&region, config.region, bound_input_count, bound_output_count) != 0) {
+    if (hm2_region_create(&region, config.region, bound_input_count + HOST_SIGNALS,
+                          bound_output_count) != 0) {
         goto fail;
     }
     hm2_region_config header = {
@@ -620,6 +694,7 @@ int main(int argc, char **argv) {
         .drive_watchdog_us = config.drive_watchdog_us,
         .spin_iterations = config.spin_iterations,
         .worst_case_cycle_ns = config.worst_case_cycle_ns,
+        .flags = config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u,
     };
     hm2_region_describe(&region, &header);
     declare_signals(&region);
@@ -641,8 +716,8 @@ int main(int argc, char **argv) {
 
     hm2_log(HM2_LOG_INFO,
             "region %s: %zu signal(s), %zu in and %zu out, %u us cycle, generation %llu",
-            config.region, bound_input_count + bound_output_count, bound_input_count,
-            bound_output_count, config.cycle_us,
+            config.region, bound_input_count + HOST_SIGNALS + bound_output_count,
+            bound_input_count + HOST_SIGNALS, bound_output_count, config.cycle_us,
             (unsigned long long)region.shm->config.generation);
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
@@ -700,6 +775,28 @@ int main(int argc, char **argv) {
     int link_dead = 0;
     int bitten = 0;
 
+    /*
+     * What this process measures of itself (ADR 0046 §4), published beside the
+     * driver's pins and logged at the end: how long the read took, how long the
+     * core took to answer the last publish, and how many answers missed the
+     * send deadline. In seconds, as everything on the channel is.
+     */
+    double read_s = 0.0;
+    double answer_s = 0.0;
+    uint64_t answers_late = 0;
+    uint64_t answers_on_time = 0;
+    double read_max_s = 0.0;
+    double answer_max_s = 0.0;
+    double answer_sum_s = 0.0;
+    struct timespec published_at = {0};
+    hm2_log(HM2_LOG_INFO,
+            config.same_cycle
+                ? "same cycle: each period reads, publishes, waits for the core's answer until "
+                  "%.0f%% of the period and writes it (ADR 0046)"
+                : "not same cycle: each period writes the core's answer to the previous publish "
+                  "(send deadline %.0f%%)",
+            config.send_deadline * 100.0);
+
     while (!stopping) {
         add_ns(&next, period_ns);
         sleep_until(&next);
@@ -708,61 +805,33 @@ int main(int argc, char **argv) {
         }
 
         /*
-         * 1. The core's answer, into the driver's pins.
-         *
-         * Indexed by the cycle the outputs actually came from rather than the
-         * current one: those differ exactly when the core is late, which is
-         * the case this has to be right for.
+         * Not same cycle, the shape before ADR 0046: the core's answer to the
+         * *previous* publish goes into the pins first, and read and write
+         * follow back to back -- so what is written reaches the card a period
+         * after the sample it was computed from.
          */
-        uint64_t answered = 0;
-        int freshness = hm2_region_collect(&region, &answered);
-        if (freshness == HM2_COLLECT_FRESH || freshness == HM2_COLLECT_STALE) {
-            const double *values = hm2_region_outputs(&region, answered);
-            if (values) {
-                for (size_t i = 0; i < bound_output_count; i++) {
-                    double value = values[bound_outputs[i].value_index];
-                    /*
-                     * A pin the driver writes too is the core's only when the
-                     * core changes it (ADR 0045 §1): written every cycle, the
-                     * core's held zero undid a watchdog bite the cycle after
-                     * it happened. A stale answer repeats the last one, which
-                     * is no change, so a write is applied once.
-                     */
-                    if (bound_outputs[i].flags & CNC_OUTBOARD_SIGNAL_ON_CHANGE) {
-                        if (value == bound_outputs[i].last) {
-                            continue;
-                        }
-                        bound_outputs[i].last = value;
-                    }
-                    hm2_shim_cell_set(bound_outputs[i].signal, value);
-                }
-            }
-            if (freshness == HM2_COLLECT_STALE) {
-                stale++;
-            }
-            if (!attached) {
-                attached = 1;
-                hm2_log(HM2_LOG_INFO, "the core has attached; from now on %u unanswered cycle(s) "
-                        "let the FPGA watchdog bite", config.response_watchdog_cycles);
-            }
+        if (!config.same_cycle) {
+            take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
         }
 
         /*
-         * 2. and 3. The driver's own cycle: read, then write.
-         *
-         * In that order, and it is the order a LinuxCNC HAL file uses: the
-         * read first in the servo thread, the write last. The read is the
-         * round trip that brings the card's state back; the write puts this
-         * cycle's setpoints into the outgoing packet, pets the watchdog and
-         * starts the next Smart Serial transaction by setting its DoIt bit.
-         * That transaction then has the whole period to finish before the
-         * next read looks for it. Write-then-read back to back gave it tens of
-         * microseconds: on a 7I76EU every read found DoIt still set, the
-         * driver counted a comms error per cycle and stopped the port after
-         * 200 -- and with it every field input and output on the card.
+         * The read: the round trip that brings the card's state back, first
+         * in the period as in a LinuxCNC servo thread. Timed, because it is
+         * most of this process's worst cycle and the header's figure for that
+         * is a guess until it is measured.
          */
+        struct timespec read_start;
+        struct timespec read_end;
+        clock_gettime(CLOCK_MONOTONIC, &read_start);
         read->funct(read->arg, (long)period_ns);
-        write->funct(write->arg, (long)period_ns);
+        clock_gettime(CLOCK_MONOTONIC, &read_end);
+        read_s = seconds_between(&read_start, &read_end);
+        if (read_s > read_max_s) {
+            read_max_s = read_s;
+        }
+        if (!config.same_cycle) {
+            write->funct(write->arg, (long)period_ns);
+        }
 
         if (!link_dead && has_io_error && hm2_shim_cell_get(&io_error) != 0.0) {
             link_dead = 1;
@@ -830,9 +899,53 @@ int main(int argc, char **argv) {
                     values[bound_inputs[i].value_index] = hm2_shim_cell_get(bound_inputs[i].signal);
                 }
             }
+            if (values) {
+                values[bound_input_count + HOST_READ_TIME] = read_s;
+                values[bound_input_count + HOST_ANSWER_TIME] = answer_s;
+                values[bound_input_count + HOST_ANSWERS_LATE] = (double)answers_late;
+            }
             hm2_region_set_bus(&region, cycle, bus_state, bus_fault);
+            clock_gettime(CLOCK_MONOTONIC, &published_at);
             hm2_region_publish(&region, cycle);
             published = cycle;
+        }
+
+        /*
+         * Same cycle (ADR 0046 §1): the core's answer to what was just
+         * published, written in this period. Waited for until the send
+         * deadline -- the core wakes the futex word after answering -- and
+         * only once the core has answered at all: before that there is nobody
+         * to wait for. A late answer is not an error: what is written then is
+         * the last complete one, as every period wrote before, and it is
+         * counted.
+         *
+         * The write puts the setpoints into the outgoing packet, pets the
+         * watchdog and starts the next Smart Serial transaction by setting
+         * its DoIt bit, which has the rest of the period to finish before the
+         * next read looks for it. Write-then-read back to back gave it tens of
+         * microseconds once (v0.3.1): on a 7I76EU every read found DoIt still
+         * set, and the port stopped after 200 errors with every field input
+         * and output behind it.
+         */
+        if (config.same_cycle) {
+            if (cycle != 0 && hm2_region_answered(&region) > 0) {
+                struct timespec send = next;
+                add_ns(&send, send_ns);
+                if (hm2_region_wait_answer(&region, cycle, &send)) {
+                    struct timespec now;
+                    clock_gettime(CLOCK_MONOTONIC, &now);
+                    answer_s = seconds_between(&published_at, &now);
+                    answers_on_time++;
+                    answer_sum_s += answer_s;
+                    if (answer_s > answer_max_s) {
+                        answer_max_s = answer_s;
+                    }
+                } else {
+                    answers_late++;
+                }
+            }
+            take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
+            write->funct(write->arg, (long)period_ns);
         }
 
         /* The core said it is going away. Nothing to wait for. */
@@ -843,17 +956,28 @@ int main(int argc, char **argv) {
             break;
         }
 
-        /* The send deadline, for the next collect: a real master puts its
-           outputs on the wire near the end of the period, which is what gives
-           the core the cycle to answer in. */
-        struct timespec send = next;
-        add_ns(&send, send_ns);
-        sleep_until(&send);
+        /* Not same cycle: the send deadline, for the next collect. A real
+           master puts its outputs on the wire near the end of the period,
+           which is what gives the core the cycle to answer in. */
+        if (!config.same_cycle) {
+            struct timespec send = next;
+            add_ns(&send, send_ns);
+            sleep_until(&send);
+        }
     }
 
     hm2_log(HM2_LOG_INFO, "stopping: %llu cycle(s), %llu overrun(s), %llu stale collect(s)",
             (unsigned long long)published, (unsigned long long)region.overruns,
             (unsigned long long)stale);
+    hm2_log(HM2_LOG_INFO, "the read took %.0f us at worst", read_max_s * 1e6);
+    if (config.same_cycle) {
+        hm2_log(HM2_LOG_INFO,
+                "same cycle: %llu answer(s) within the period, %llu late; the core answered "
+                "%.0f us after the publish on average, %.0f us at worst",
+                (unsigned long long)answers_on_time, (unsigned long long)answers_late,
+                answers_on_time ? answer_sum_s / (double)answers_on_time * 1e6 : 0.0,
+                answer_max_s * 1e6);
+    }
 
     if (transport.app_exit) {
         transport.app_exit();

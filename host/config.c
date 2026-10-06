@@ -193,6 +193,10 @@ int hm2_config_load(hm2_config *config, const char *path) {
     config->spin_iterations = 0;
     config->worst_case_cycle_ns = 800000;
     config->send_deadline = 0.8;
+    /* The core's answer written in the period it was published in (ADR
+       0046): sample to command is a read and the core's computation rather
+       than a period. Off is the shape before it, kept to compare the two. */
+    config->same_cycle = 1;
     config->arena_bytes = 8u * 1024u * 1024u;
     config->max_signals = 4096;
     config->max_functs = 64;
@@ -274,6 +278,16 @@ int hm2_config_load(hm2_config *config, const char *path) {
             config->spin_iterations = (uint32_t)strtoul(value, NULL, 0);
         } else if (strcmp(key, "send_deadline") == 0) {
             config->send_deadline = strtod(value, NULL);
+        } else if (strcmp(key, "same_cycle") == 0) {
+            if (strcmp(value, "true") == 0 || strcmp(value, "1") == 0) {
+                config->same_cycle = 1;
+            } else if (strcmp(value, "false") == 0 || strcmp(value, "0") == 0) {
+                config->same_cycle = 0;
+            } else {
+                hm2_log(HM2_LOG_ERROR, "%s:%d: same_cycle is '%s'; true or false", path,
+                        number, value);
+                failures++;
+            }
         } else if (strcmp(key, "arena_bytes") == 0) {
             config->arena_bytes = (size_t)strtoull(value, NULL, 0);
         } else if (strcmp(key, "max_signals") == 0) {

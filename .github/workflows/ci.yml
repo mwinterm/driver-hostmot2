@@ -91,6 +91,16 @@ jobs:
             exit 1
           fi
 
+          # One period, read to write (channel 2.3.0, the control's ADR
+          # 0046): on by default, and the process's own timing published
+          # beside the driver's pins, in seconds.
+          grep -q 'same cycle: each period reads, publishes, waits' /tmp/host.log \
+            || { echo "the host did not take the same-cycle shape by default" >&2; exit 1; }
+          for name in read-time answer-time answers-late; do
+            grep -qE "signal +[0-9]+ in .* hm2-host\.$name$" /tmp/host.log \
+              || { echo "hm2-host.$name was not published" >&2; exit 1; }
+          done
+
       # A `pin.` line fixes a pin the driver only reads, and publishes it for
       # reading only (channel 2.2.0, the control's ADR 0045 §2). Everything
       # else a `pin.` line could name is refused by name, with its line.

@@ -80,6 +80,22 @@ Two more things the process says without being asked (channel 2.2.0, ADR
   reads true it is `FAULT` with reason `WATCHDOG`. The process goes on
   cycling either way: it is the control's clock.
 
+**One period, read to write** (channel 2.3.0, the control's ADR 0046). Each
+period reads the card, publishes what it read, waits for the control's answer
+to it -- the control wakes the process -- until `send_deadline` (a fraction
+of the period, 0.8 by default) and writes it, the way a LinuxCNC servo thread
+reads, computes and writes. A sample reaches the card's outputs the period it
+was taken, where it used to take two. An answer that misses the deadline is
+written as the last complete one and counted. `same_cycle = false` keeps the
+old order -- the answer to the previous publish written first -- to compare
+the two on a bench.
+
+The process says how that goes, as inputs beside the driver's pins, in SI:
+`hm2-host.read-time` [s] (the last read's round trip), `hm2-host.answer-time`
+[s] (from the last publish to the control's answer) and
+`hm2-host.answers-late` (a count). A recorder on the control's side
+(LeafSCOPE) records them like any pin; the worst of each is logged at stop.
+
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the
 other side of the channel. Two files that both described the machine would be
