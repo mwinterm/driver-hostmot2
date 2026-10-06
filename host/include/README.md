@@ -5,9 +5,9 @@ repository (ADR 0022 §8: this repository vendors it and says which version).
 
     Upstream repo : https://github.com/mwinterm/LibreCNC
     Path          : crates/cnc-outboard-abi/include/cnc_outboard.h
-    Channel version: 2.0.0
-    Copied from commit: a94d8918c22464b6afbced275aa6ef2bec6969ee
-    Copied on     : 2026-09-09
+    Channel version: 2.2.0
+    Copied from commit: 032fd5d4218d8266b800bd89a2a75e0b0aea1f77 (LeafCNC branch feature/mikron-wf41c, ADR 0045)
+    Copied on     : 2026-10-07
 
 It is **Apache-2.0 OR MIT**, which is why this GPL-2.0 repository may compile
 against it, and it is the whole reason that dual license exists (ADR 0022 §3).

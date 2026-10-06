@@ -84,6 +84,24 @@ void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell) {
 
 size_t hm2_shim_declared_param_count(void) { return declared_count; }
 
+int hm2_shim_param_ending(const char *suffix, hm2_shim_signal *out) {
+    if (!suffix || !out) {
+        return 0;
+    }
+    size_t tail = strlen(suffix);
+    for (size_t i = 0; i < declared_count; i++) {
+        size_t length = strlen(declared[i].name);
+        if (length >= tail && strcmp(declared[i].name + length - tail, suffix) == 0) {
+            out->name = declared[i].name;
+            out->type = declared[i].type;
+            out->dir = HM2_SHIM_TO_CORE;
+            out->cell = declared[i].cell;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 const char *hm2_shim_declared_param_at(size_t index, double *value) {
     if (index >= declared_count) {
         return NULL;

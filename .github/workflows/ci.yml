@@ -85,6 +85,33 @@ jobs:
           grep -q 'letting the FPGA watchdog bite' /tmp/host.log \
             || { echo "the response watchdog never fired" >&2; exit 1; }
 
+      # A `pin.` line fixes a pin the driver only reads, and publishes it for
+      # reading only (channel 2.2.0, the control's ADR 0045 §2). Everything
+      # else a `pin.` line could name is refused by name, with its line.
+      - name: a pin is fixed by its pin. line, and only a pin the driver reads
+        run: |
+          { cat examples/test-board.conf; echo 'pin.hm2_test.0.gpio.023.out = true'; } \
+            > /tmp/fixed.conf
+          timeout 5 ./build/hm2-host /tmp/fixed.conf build > /tmp/fixed.log 2>&1 || true
+          grep -q 'pin hm2_test.0.gpio.023.out fixed at 1' /tmp/fixed.log \
+            || { cat /tmp/fixed.log; echo "the pin was not fixed" >&2; exit 1; }
+          grep -qE 'signal +[0-9]+ in +bool .* fixed +hm2_test\.0\.gpio\.023\.out$' /tmp/fixed.log \
+            || { echo "a fixed pin was not published as an input marked fixed" >&2; exit 1; }
+
+          { cat examples/test-board.conf
+            echo 'pin.hm2_test.0.gpio.000.in = true'
+            echo 'pin.hm2_test.0.gpio.099.out = 1'
+            echo 'pin.hm2_test.0.gpio.001.out = 2'; } > /tmp/refused.conf
+          if timeout 5 ./build/hm2-host /tmp/refused.conf build > /tmp/refused.log 2>&1; then
+            echo "pin lines that cannot hold were accepted" >&2; exit 1
+          fi
+          grep -q 'pin.hm2_test.0.gpio.000.in is a pin the driver writes' /tmp/refused.log \
+            || { echo "a pin the driver writes was not refused" >&2; exit 1; }
+          grep -q 'pin.hm2_test.0.gpio.099.out is not a pin the driver declared' /tmp/refused.log \
+            || { echo "an undeclared pin was not refused" >&2; exit 1; }
+          grep -q 'does not fit the pin, which is a bit' /tmp/refused.log \
+            || { echo "a value that does not fit was not refused" >&2; exit 1; }
+
       # The rule that makes the two-repository split mean anything, checked
       # from this side too (ADR 0022 §8).
       # One file crosses between the two repositories, in this direction, and

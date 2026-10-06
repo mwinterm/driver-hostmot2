@@ -185,7 +185,8 @@ void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
 
 /* One descriptor. Written before cycling starts and read-only after. */
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,
-                        uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index) {
+                        uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index,
+                        uint32_t flags) {
     cnc_outboard_signal_desc *table =
         (void *)((char *)region->base + region->block.table_offset);
     cnc_outboard_signal_desc *desc = &table[index];
@@ -197,6 +198,7 @@ void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint
     desc->unit = unit;
     desc->value_index = value_index;
     desc->update_divisor = 1;
+    desc->flags = flags;
 }
 
 void hm2_region_set_state(hm2_region *region, uint32_t state) {
@@ -266,6 +268,17 @@ uint64_t hm2_region_begin(hm2_region *region) {
         }
     }
     return next;
+}
+
+/*
+ * Whether the board answers, into the fixed input of `cycle` (channel 2.2.0,
+ * ADR 0045 §3): OPERATIONAL while it does, FAULT and why when it does not.
+ * Between `begin` and `publish`, like every other write to this cycle's half.
+ */
+void hm2_region_set_bus(hm2_region *region, uint64_t cycle, uint32_t state, uint32_t fault) {
+    cnc_outboard_input *input = &region->shm->input[cycle & 1];
+    input->bus_state = state;
+    input->bus_fault = fault;
 }
 
 /*

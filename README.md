@@ -44,12 +44,41 @@ cycle_us = 1000
 module.board_ip = 10.10.10.10
 module.config = num_encoders=6 sserial_port_0=00xxxx
 param.hm2_7i92.0.encoder.00.scale = 2000
+pin.hm2_7i92.0.stepgen.00.control-type = 1
 ```
 
 `module.*` is what a LinuxCNC `loadrt` line sets; `param.*` is what a `setp`
 line sets. A key it does not know, and a `param.` nothing claimed, are both
 refused — a misspelled encoder scale otherwise leaves the machine moving the
 wrong distance in silence.
+
+`pin.*` is what a `setp` on a pin nothing drives sets: a stepgen's
+`control-type`, a DPLL's `timer-us`, an encoder's `timer-number` or
+`quad-error-enable` (the control's ADR 0045 §2). The value -- `true`,
+`false` or a number -- is set before the board's first cycle, and the pin is
+then published **for reading only**, flagged `FIXED`, so nothing in the
+control can write it and a machine description that tries is told why. A pin
+nobody declared, one the driver writes, a both-ways pin and a value that does
+not fit the pin's type are each refused by name, with the line.
+
+Two more things the process says without being asked (channel 2.2.0, ADR
+0045):
+
+- A pin the driver writes as well as reads -- a `HAL_IO` pin such as an
+  encoder's `index-enable` or the watchdog's `has_bit` -- is published once
+  in each direction, and its output is applied **only in a cycle the
+  control's value changes**, flagged `ON_CHANGE`. Between changes the pin is
+  the driver's: the card lowers `index-enable` at the index and it stays
+  lowered, a bite raises `has_bit` and it stays raised until the control
+  lowers it. Written every cycle, the control's held zero used to undo a
+  watchdog bite the cycle after it happened.
+- Whether the board answers, in the channel's `bus_state` and `bus_fault`
+  every cycle. When the transport sets `io_error` -- too many late or lost
+  replies, after which it reads and writes nothing -- the bus is `FAULT`
+  with reason `LINK` for the rest of this run, and the control faults every
+  axis behind the process and says a restart brings it back. While `has_bit`
+  reads true it is `FAULT` with reason `WATCHDOG`. The process goes on
+  cycling either way: it is the control's clock.
 
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the

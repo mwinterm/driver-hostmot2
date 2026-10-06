@@ -73,8 +73,26 @@ extern "C" {
  * changes that leave every existing offset alone are minor.
  */
 #define CNC_OUTBOARD_ABI_VERSION_MAJOR 2
-#define CNC_OUTBOARD_ABI_VERSION_MINOR 1
+#define CNC_OUTBOARD_ABI_VERSION_MINOR 2
 #define CNC_OUTBOARD_ABI_VERSION_PATCH 0
+
+/*
+ * 2.2.0 (ADR 0045) let a process say three things about its hardware that
+ * the core could not tell, each in a word that was reserved:
+ *
+ *   - `flags` on a descriptor. CNC_OUTBOARD_SIGNAL_ON_CHANGE marks an output
+ *     the process applies only in a cycle its value changes, because the
+ *     hardware writes the same pin itself -- HostMot2's `index-enable`, a
+ *     watchdog's `has_bit`. CNC_OUTBOARD_SIGNAL_FIXED marks an input whose
+ *     value the process's own configuration set, which nothing writes.
+ *   - `bus_fault` in the fixed input, beside `bus_state`: why the hardware no
+ *     longer answers, while the process goes on cycling.
+ *
+ * And the core acts on `bus_state` from here on: FAULT faults every axis of
+ * the driver. No offset moved. A 2.1.0 process leaves zeros: no flags, so its
+ * outputs are applied every cycle as before, and `bus_state` INIT, which the
+ * core does not act on. Hence minor.
+ */
 
 /*
  * 2.1.0 gave the output value block a starting value. A process may write
@@ -206,7 +224,16 @@ typedef enum cnc_outboard_axis_request {
  * Whole-cycle payloads
  * ------------------------------------------------------------------------- */
 
-/* How the bus itself is doing, published with every cycle. */
+/*
+ * How the bus itself is doing, published with every cycle.
+ *
+ * "The bus" is whatever the process reaches its hardware over: an EtherCAT
+ * ring, the UDP link to a Mesa card. From 2.2.0 the core acts on FAULT
+ * (ADR 0045 §3): every axis of the driver reports a fault for as long as it
+ * holds, so the core's reaction table takes the machine down and says why.
+ * The process goes on cycling through it -- it is still the core's clock --
+ * and says why in `bus_fault`.
+ */
 typedef enum cnc_outboard_bus_state {
   /* Not yet cycling: slaves are being brought up. */
   CNC_OUTBOARD_BUS_INIT = 0,
@@ -214,9 +241,33 @@ typedef enum cnc_outboard_bus_state {
   CNC_OUTBOARD_BUS_SYNCING = 1,
   /* Cycling with the clocks locked. The only state motion is allowed in. */
   CNC_OUTBOARD_BUS_OPERATIONAL = 2,
-  /* A slave dropped out or the bus failed. */
+  /*
+   * The hardware no longer answers, or its outputs are no longer the core's:
+   * a slave dropped out, the link went down, the hardware's own watchdog bit.
+   * Every input published since may be stale. `bus_fault` says which.
+   */
   CNC_OUTBOARD_BUS_FAULT = 3
 } cnc_outboard_bus_state;
+
+/*
+ * Why the bus is in FAULT (2.2.0, ADR 0045 §3). NONE in every other state.
+ *
+ * The core reports an axis faulted by its bus with this value negated as the
+ * axis's fault code -- -1 for a dead link -- because a drive's own codes reach
+ * the core as non-negative, and the two must not be confused.
+ */
+typedef enum cnc_outboard_bus_fault {
+  CNC_OUTBOARD_BUS_FAULT_NONE = 0,
+  /*
+   * The transport stopped answering. No output reaches the hardware and every
+   * input since is stale; the hardware's own watchdog is what stops it.
+   */
+  CNC_OUTBOARD_BUS_FAULT_LINK = 1,
+  /* The hardware's own watchdog bit. Its outputs are in their safe state. */
+  CNC_OUTBOARD_BUS_FAULT_WATCHDOG = 2,
+  /* Anything else that leaves the hardware unreachable or not the core's. */
+  CNC_OUTBOARD_BUS_FAULT_OTHER = 3
+} cnc_outboard_bus_fault;
 
 typedef struct cnc_outboard_input {
   /* Distributed-clock time this cycle was sampled at [ns]. */
@@ -234,7 +285,11 @@ typedef struct cnc_outboard_input {
   /* Slaves in OP, against the number configured. Both zero before INIT ends. */
   uint32_t slaves_operational;
   uint32_t slaves_configured;
-  uint32_t reserved;
+  /*
+   * cnc_outboard_bus_fault: why `bus_state` is FAULT, NONE otherwise. Added
+   * in 2.2.0 in what was a reserved word, so a 2.1.0 process leaves NONE.
+   */
+  uint32_t bus_fault;
   cnc_outboard_axis_input axes[CNC_OUTBOARD_MAX_AXES];
 } cnc_outboard_input;
 
@@ -284,9 +339,48 @@ typedef struct cnc_outboard_output {
 typedef enum cnc_outboard_signal_direction {
   /* The driver process publishes it: feedback, inputs, status. */
   CNC_OUTBOARD_SIGNAL_INPUT = 0,
-  /* The core writes it: setpoints, outputs, control. */
+  /*
+   * The core writes it, every cycle: setpoints, outputs, control. The
+   * process writes it once, before RUNNING: each output's starting value,
+   * into both halves (2.1.0, above).
+   */
   CNC_OUTBOARD_SIGNAL_OUTPUT = 1
 } cnc_outboard_signal_direction;
+
+/*
+ * What a descriptor's `flags` may say (2.2.0, ADR 0045). A bit this build does
+ * not know is refused at attach, as an unknown enumerator is: the core acts on
+ * these, and a meaning nobody can name is not one to guess at.
+ */
+
+/*
+ * On an OUTPUT: the process applies it to the hardware only in a cycle whose
+ * value differs from the last value it applied, and between changes leaves
+ * the pin to the hardware, which writes it too. HostMot2's `index-enable` is
+ * raised by the core to arm the index and lowered by the card when the index
+ * arrives; a `has_bit` is raised by the card when its watchdog bites and
+ * lowered by the core to resume. The input of the same name says what the
+ * pin holds.
+ *
+ * So the core's level is a request, and a change of it is the write: to arm
+ * an index again after the card lowered it, lower the output and raise it.
+ * Nothing the core writes is different because of this flag; it is said so
+ * the core can refuse such an output where a level must hold -- an axis's
+ * command, an amplifier enable -- and so a reader of the region can tell.
+ */
+#define CNC_OUTBOARD_SIGNAL_ON_CHANGE (1u << 0)
+
+/*
+ * On an INPUT: a value the process's own configuration fixed -- HostMot2's
+ * `pin.<name> = value` in hm2-host.conf, a stepgen's `control-type`, a DPLL
+ * timer. Published as an input so it can be read and nothing on the core's
+ * side can write it; a machine description naming it as an output is
+ * refused, and the refusal can say why.
+ */
+#define CNC_OUTBOARD_SIGNAL_FIXED (1u << 1)
+
+/* Every bit this version defines. */
+#define CNC_OUTBOARD_SIGNAL_FLAGS_KNOWN (CNC_OUTBOARD_SIGNAL_ON_CHANGE | CNC_OUTBOARD_SIGNAL_FIXED)
 
 /* How to present the value. Every value is a double on the wire regardless. */
 typedef enum cnc_outboard_signal_type {
@@ -364,7 +458,13 @@ typedef struct cnc_outboard_signal_desc {
    * A hint to the core; the value is read every cycle regardless.
    */
   uint32_t update_divisor;
-  uint32_t reserved[2];
+  /*
+   * CNC_OUTBOARD_SIGNAL_* bits (2.2.0, above). Zero in a 2.1.0 region, which
+   * is what every signal meant before: an output applied every cycle, an
+   * input the hardware sets.
+   */
+  uint32_t flags;
+  uint32_t reserved;
 } cnc_outboard_signal_desc;
 
 /*
@@ -396,7 +496,10 @@ typedef struct cnc_outboard_signal_block {
    * The value blocks. Each is two halves of `*_count` doubles, selected by the
    * parity of the cycle number exactly as the fixed buffers above are, and
    * published by the same two counters. `input` is written by the process and
-   * read by the core; `output` the other way about.
+   * read by the core; `output` the other way about -- once the core is
+   * answering. Before that the process may write each output's starting value
+   * into both halves of `output` (2.1.0), and the core reads them before its
+   * first answer.
    */
   uint64_t input_offset;
   uint64_t output_offset;

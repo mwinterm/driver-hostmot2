@@ -220,6 +220,18 @@ size_t hm2_shim_arena_size(void);
 size_t hm2_shim_unclaimed_params(const char **into, size_t capacity);
 
 /*
+ * A declared parameter whose HAL name ends in `suffix`, as a signal view the
+ * host can read with `hm2_shim_cell_get` every cycle: its name, type and cell.
+ * Returns 1 and fills `out` for the first match, 0 for none.
+ *
+ * For what the driver says about itself in a parameter rather than a pin --
+ * the transport's `io_error`, which it sets when the link to the board has
+ * failed and which the host turns into the channel's bus fault (ADR 0045 §3).
+ * The direction in the view means nothing: a parameter crosses no channel.
+ */
+int hm2_shim_param_ending(const char *suffix, hm2_shim_signal *out);
+
+/*
  * The host is about to run its cycle. From here on `rtapi_task_self` answers
  * 0, as it does inside a LinuxCNC servo thread, and before it -1, as it does
  * in `rtapi_app_main`; the transport sends immediately outside a task and

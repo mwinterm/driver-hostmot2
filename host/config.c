@@ -18,6 +18,7 @@
  */
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,66 @@ static int add_hal_param(hm2_config *config, const char *name, double value) {
     return 0;
 }
 
+/*
+ * A pin's value as the file says it: `true`, `false` or a number, and nothing
+ * after it. Strict, unlike `param.`'s, because a pin fixed at a value the
+ * file did not mean is the failure this key exists to prevent.
+ */
+static int parse_pin_value(const char *text, double *out) {
+    if (strcmp(text, "true") == 0) {
+        *out = 1.0;
+        return 0;
+    }
+    if (strcmp(text, "false") == 0) {
+        *out = 0.0;
+        return 0;
+    }
+    char *end = NULL;
+    errno = 0;
+    double value = strtod(text, &end);
+    if (end == text || *end != '\0' || errno != 0 || !isfinite(value)) {
+        return -1;
+    }
+    *out = value;
+    return 0;
+}
+
+static int add_pin(hm2_config *config, const char *name, double value, int line) {
+    for (size_t i = 0; i < config->pin_count; i++) {
+        if (strcmp(config->pin_names[i], name) == 0) {
+            hm2_log(HM2_LOG_ERROR,
+                    "pin.%s is set twice; one pin, one value (the first is on line %d)", name,
+                    config->pin_lines[i]);
+            return -1;
+        }
+    }
+    const char **names =
+        realloc((void *)config->pin_names, (config->pin_count + 1) * sizeof(*names));
+    if (!names) {
+        return -1;
+    }
+    config->pin_names = names;
+    double *values = realloc(config->pin_values, (config->pin_count + 1) * sizeof(*values));
+    if (!values) {
+        return -1;
+    }
+    config->pin_values = values;
+    int *lines = realloc(config->pin_lines, (config->pin_count + 1) * sizeof(*lines));
+    if (!lines) {
+        return -1;
+    }
+    config->pin_lines = lines;
+    char *copy = strdup(name);
+    if (!copy) {
+        return -1;
+    }
+    config->pin_names[config->pin_count] = copy;
+    config->pin_values[config->pin_count] = value;
+    config->pin_lines[config->pin_count] = line;
+    config->pin_count++;
+    return 0;
+}
+
 int hm2_config_load(hm2_config *config, const char *path) {
     memset(config, 0, sizeof(*config));
 
@@ -182,6 +243,17 @@ int hm2_config_load(hm2_config *config, const char *path) {
             if (add_hal_param(config, key + 6, strtod(value, NULL)) != 0) {
                 failures++;
             }
+        } else if (strncmp(key, "pin.", 4) == 0) {
+            double pin_value = 0.0;
+            if (parse_pin_value(value, &pin_value) != 0) {
+                hm2_log(HM2_LOG_ERROR,
+                        "%s:%d: '%s' is not a value for %s: true, false or a number, and "
+                        "nothing after it",
+                        path, number, value, key);
+                failures++;
+            } else if (add_pin(config, key + 4, pin_value, number) != 0) {
+                failures++;
+            }
         } else if (strcmp(key, "region") == 0) {
             snprintf(config->region, sizeof(config->region), "%s", value);
         } else if (strcmp(key, "transport") == 0) {
@@ -255,6 +327,16 @@ void hm2_config_free(hm2_config *config) {
     }
     free((void *)config->param_names);
     free(config->param_values);
+    for (size_t i = 0; i < config->pin_count; i++) {
+        free((void *)config->pin_names[i]);
+    }
+    free((void *)config->pin_names);
+    free(config->pin_values);
+    free(config->pin_lines);
+    config->pin_names = NULL;
+    config->pin_values = NULL;
+    config->pin_lines = NULL;
+    config->pin_count = 0;
     config->module_params = NULL;
     config->param_names = NULL;
     config->param_values = NULL;

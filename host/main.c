@@ -200,12 +200,121 @@ static int load_module(hm2_module *module, const char *path, int global) {
 typedef struct {
     const hm2_shim_signal *signal;
     size_t value_index;
+    /* CNC_OUTBOARD_SIGNAL_* (channel 2.2.0, ADR 0045). */
+    uint32_t flags;
+    /* On an ON_CHANGE output, the value last applied to the pin. */
+    double last;
 } bound_signal;
 
 static bound_signal *bound_inputs;
 static size_t bound_input_count;
 static bound_signal *bound_outputs;
 static size_t bound_output_count;
+
+/* The pins `pin.` lines fixed, so binding publishes them for reading only. */
+static const hm2_shim_signal **fixed_pins;
+static size_t fixed_pin_count;
+
+static int is_fixed(const hm2_shim_signal *signal) {
+    for (size_t i = 0; i < fixed_pin_count; i++) {
+        if (fixed_pins[i] == signal) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Whether the driver writes this pin as well as reads it: a HAL_IO pin, which
+ * the shim publishes once in each direction over one cell (hm2_shim.h).
+ */
+static int written_by_the_driver(const hm2_shim_signal *signal) {
+    size_t count = hm2_shim_signal_count();
+    for (size_t i = 0; i < count; i++) {
+        const hm2_shim_signal *other = hm2_shim_signal_at(i);
+        if (other != signal && other->cell == signal->cell && other->dir == HM2_SHIM_TO_CORE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * The `pin.` lines (ADR 0045 §2): each names a pin the driver reads and only
+ * reads, whose value is then set here, before the board's first cycle, and
+ * published for reading only. Everything else is refused by name: a pin
+ * nobody declared, one the driver writes (it would overwrite the value at its
+ * next read), a both-ways pin, a value that does not fit the pin's type.
+ */
+static int fix_pins(const hm2_config *config, const char *config_path) {
+    fixed_pins = calloc(config->pin_count ? config->pin_count : 1, sizeof(*fixed_pins));
+    if (!fixed_pins) {
+        return -1;
+    }
+    int failures = 0;
+    size_t count = hm2_shim_signal_count();
+    for (size_t p = 0; p < config->pin_count; p++) {
+        const char *name = config->pin_names[p];
+        double value = config->pin_values[p];
+        int line = config->pin_lines[p];
+        const hm2_shim_signal *read_by_driver = NULL;
+        const hm2_shim_signal *written = NULL;
+        for (size_t i = 0; i < count; i++) {
+            const hm2_shim_signal *signal = hm2_shim_signal_at(i);
+            if (strcmp(signal->name, name) != 0) {
+                continue;
+            }
+            if (signal->dir == HM2_SHIM_FROM_CORE) {
+                read_by_driver = signal;
+            } else {
+                written = signal;
+            }
+        }
+        if (!read_by_driver && !written) {
+            hm2_log(HM2_LOG_ERROR,
+                    "%s:%d: pin.%s is not a pin the driver declared. The names are the ones "
+                    "this process logs at start, one line per signal",
+                    config_path, line, name);
+            failures++;
+            continue;
+        }
+        if (written) {
+            hm2_log(HM2_LOG_ERROR,
+                    "%s:%d: pin.%s is a pin the driver writes%s, so a value fixed here would "
+                    "be overwritten at its next read. Only a pin the driver reads and nothing "
+                    "drives can be fixed (ADR 0045 §2)",
+                    config_path, line, name, read_by_driver ? " as well as reads" : "");
+            failures++;
+            continue;
+        }
+        int fits = 1;
+        switch (read_by_driver->type) {
+        case HM2_SHIM_BOOL: fits = value == 0.0 || value == 1.0; break;
+        case HM2_SHIM_SINT:
+            fits = value == (double)(long long)value && value >= -2147483648.0 &&
+                   value <= 2147483647.0;
+            break;
+        case HM2_SHIM_UINT:
+            fits = value == (double)(long long)value && value >= 0.0 && value <= 4294967295.0;
+            break;
+        case HM2_SHIM_REAL: break;
+        }
+        if (!fits) {
+            hm2_log(HM2_LOG_ERROR,
+                    "%s:%d: pin.%s = %g does not fit the pin, which is %s",
+                    config_path, line, name, value,
+                    read_by_driver->type == HM2_SHIM_BOOL ? "a bit: true or false"
+                    : read_by_driver->type == HM2_SHIM_REAL ? "a number"
+                                                            : "an integer in its range");
+            failures++;
+            continue;
+        }
+        hm2_shim_cell_set(read_by_driver, value);
+        fixed_pins[fixed_pin_count++] = read_by_driver;
+        hm2_log(HM2_LOG_INFO, "pin %s fixed at %g; published for reading only", name, value);
+    }
+    return failures ? -1 : 0;
+}
 
 static int bind_signals(void) {
     size_t count = hm2_shim_signal_count();
@@ -216,13 +325,21 @@ static int bind_signals(void) {
     }
     for (size_t i = 0; i < count; i++) {
         const hm2_shim_signal *signal = hm2_shim_signal_at(i);
-        if (signal->dir == HM2_SHIM_TO_CORE) {
+        if (signal->dir == HM2_SHIM_TO_CORE || is_fixed(signal)) {
+            /* A pin a `pin.` line fixed is read, never written: the core sees
+               its value and nothing on that side can change it. */
             bound_inputs[bound_input_count].signal = signal;
             bound_inputs[bound_input_count].value_index = bound_input_count;
+            bound_inputs[bound_input_count].flags =
+                signal->dir == HM2_SHIM_TO_CORE ? 0u : CNC_OUTBOARD_SIGNAL_FIXED;
             bound_input_count++;
         } else {
+            /* A pin the driver writes too is applied only when the core's
+               value changes, and left to the driver between (ADR 0045 §1). */
             bound_outputs[bound_output_count].signal = signal;
             bound_outputs[bound_output_count].value_index = bound_output_count;
+            bound_outputs[bound_output_count].flags =
+                written_by_the_driver(signal) ? CNC_OUTBOARD_SIGNAL_ON_CHANGE : 0u;
             bound_output_count++;
         }
     }
@@ -308,9 +425,12 @@ static const char *role_name(uint32_t role) {
  * record of what the card actually presented that day.
  */
 static void log_declared(size_t index, const char *name, const char *direction, uint32_t type,
-                         uint32_t role, size_t value_index) {
-    hm2_log(HM2_LOG_INFO, "  signal %3zu %-3s %-7s %-13s value %3zu  %s", index, direction,
-            type_name(type), role_name(role), value_index, name);
+                         uint32_t role, size_t value_index, uint32_t flags) {
+    const char *how = (flags & CNC_OUTBOARD_SIGNAL_ON_CHANGE) ? "on-change"
+                      : (flags & CNC_OUTBOARD_SIGNAL_FIXED)   ? "fixed"
+                                                              : "";
+    hm2_log(HM2_LOG_INFO, "  signal %3zu %-3s %-7s %-13s value %3zu %-9s %s", index, direction,
+            type_name(type), role_name(role), value_index, how, name);
 }
 
 static void declare_signals(hm2_region *region) {
@@ -321,8 +441,10 @@ static void declare_signals(hm2_region *region) {
         uint32_t role = channel_role(signal->name, signal->type);
         size_t slot = index++;
         hm2_region_declare(region, slot, signal->name, CNC_OUTBOARD_SIGNAL_INPUT, type, role,
-                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_inputs[i].value_index);
-        log_declared(slot, signal->name, "in", type, role, bound_inputs[i].value_index);
+                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_inputs[i].value_index,
+                           bound_inputs[i].flags);
+        log_declared(slot, signal->name, "in", type, role, bound_inputs[i].value_index,
+                     bound_inputs[i].flags);
     }
     for (size_t i = 0; i < bound_output_count; i++) {
         const hm2_shim_signal *signal = bound_outputs[i].signal;
@@ -330,8 +452,10 @@ static void declare_signals(hm2_region *region) {
         uint32_t role = channel_role(signal->name, signal->type);
         size_t slot = index++;
         hm2_region_declare(region, slot, signal->name, CNC_OUTBOARD_SIGNAL_OUTPUT, type, role,
-                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_outputs[i].value_index);
-        log_declared(slot, signal->name, "out", type, role, bound_outputs[i].value_index);
+                           CNC_OUTBOARD_UNIT_NONE, (uint32_t)bound_outputs[i].value_index,
+                           bound_outputs[i].flags);
+        log_declared(slot, signal->name, "out", type, role, bound_outputs[i].value_index,
+                     bound_outputs[i].flags);
     }
 }
 
@@ -477,6 +601,9 @@ int main(int argc, char **argv) {
         goto fail;
     }
 
+    if (fix_pins(&config, config_path) != 0) {
+        goto fail;
+    }
     if (bind_signals() != 0) {
         goto fail;
     }
@@ -505,8 +632,10 @@ int main(int argc, char **argv) {
      * every field input and output of a 7I76 with it.
      */
     for (size_t i = 0; i < bound_output_count; i++) {
-        hm2_region_seed_output(&region, bound_outputs[i].value_index,
-                               hm2_shim_cell_get(bound_outputs[i].signal));
+        /* An on-change output's starting value is the level the core starts
+           from, so its first answer is a write only if it differs. */
+        bound_outputs[i].last = hm2_shim_cell_get(bound_outputs[i].signal);
+        hm2_region_seed_output(&region, bound_outputs[i].value_index, bound_outputs[i].last);
     }
     hm2_region_set_state(&region, CNC_OUTBOARD_STATE_RUNNING);
 
@@ -542,6 +671,35 @@ int main(int argc, char **argv) {
      */
     int attached = 0;
 
+    /*
+     * Whether the board answers (channel 2.2.0, ADR 0045 §3), from what the
+     * driver says about itself. The transport sets its `io_error` parameter
+     * when packet errors pass its limit and then reads and writes nothing:
+     * the link is dead, and it stays dead for this run of the process,
+     * because whether the board kept its configuration and its counts across
+     * the outage cannot be known from here. A watchdog bite raises `has_bit`,
+     * and the board's outputs are in their safe state until it is lowered.
+     * Either way this process goes on cycling: it is the core's clock, and a
+     * core that keeps its clock faults every axis and says why.
+     */
+    hm2_shim_signal io_error = {0};
+    int has_io_error = hm2_shim_param_ending(".io_error", &io_error);
+    const hm2_shim_signal *has_bit = NULL;
+    for (size_t i = 0; i < bound_input_count; i++) {
+        const char *name = bound_inputs[i].signal->name;
+        size_t length = strlen(name);
+        if (length >= 17 && strcmp(name + length - 17, ".watchdog.has_bit") == 0) {
+            has_bit = bound_inputs[i].signal;
+            break;
+        }
+    }
+    if (!has_io_error) {
+        hm2_log(HM2_LOG_WARN, "the driver declared no io_error parameter, so a dead link to "
+                              "the board cannot be told to the core");
+    }
+    int link_dead = 0;
+    int bitten = 0;
+
     while (!stopping) {
         add_ns(&next, period_ns);
         sleep_until(&next);
@@ -562,7 +720,21 @@ int main(int argc, char **argv) {
             const double *values = hm2_region_outputs(&region, answered);
             if (values) {
                 for (size_t i = 0; i < bound_output_count; i++) {
-                    hm2_shim_cell_set(bound_outputs[i].signal, values[bound_outputs[i].value_index]);
+                    double value = values[bound_outputs[i].value_index];
+                    /*
+                     * A pin the driver writes too is the core's only when the
+                     * core changes it (ADR 0045 §1): written every cycle, the
+                     * core's held zero undid a watchdog bite the cycle after
+                     * it happened. A stale answer repeats the last one, which
+                     * is no change, so a write is applied once.
+                     */
+                    if (bound_outputs[i].flags & CNC_OUTBOARD_SIGNAL_ON_CHANGE) {
+                        if (value == bound_outputs[i].last) {
+                            continue;
+                        }
+                        bound_outputs[i].last = value;
+                    }
+                    hm2_shim_cell_set(bound_outputs[i].signal, value);
                 }
             }
             if (freshness == HM2_COLLECT_STALE) {
@@ -591,6 +763,33 @@ int main(int argc, char **argv) {
          */
         read->funct(read->arg, (long)period_ns);
         write->funct(write->arg, (long)period_ns);
+
+        if (!link_dead && has_io_error && hm2_shim_cell_get(&io_error) != 0.0) {
+            link_dead = 1;
+            hm2_log(HM2_LOG_ERROR,
+                    "the link to the board is dead: the driver set io_error and reads and "
+                    "writes nothing more, so every input from here on is stale and the "
+                    "board's own watchdog has stopped its outputs. The core faults every axis "
+                    "behind this process; restarting the control is the recovery (ADR 0045 "
+                    "§3)");
+        }
+        int bit_now = has_bit && hm2_shim_cell_get(has_bit) != 0.0;
+        if (bit_now != bitten) {
+            bitten = bit_now;
+            if (bitten) {
+                hm2_log(HM2_LOG_ERROR, "the board's watchdog has bitten: its outputs are in "
+                                       "their safe state until has_bit is lowered, and the "
+                                       "core faults every axis behind this process");
+            } else {
+                hm2_log(HM2_LOG_INFO, "has_bit lowered: the driver re-sends every setting and "
+                                      "the board resumes");
+            }
+        }
+        uint32_t bus_state =
+            link_dead || bitten ? CNC_OUTBOARD_BUS_FAULT : CNC_OUTBOARD_BUS_OPERATIONAL;
+        uint32_t bus_fault = link_dead ? CNC_OUTBOARD_BUS_FAULT_LINK
+                             : bitten  ? CNC_OUTBOARD_BUS_FAULT_WATCHDOG
+                                       : CNC_OUTBOARD_BUS_FAULT_NONE;
 
         /* 4. Publish, and wake the core. */
         uint64_t cycle = hm2_region_begin(&region);
@@ -631,6 +830,7 @@ int main(int argc, char **argv) {
                     values[bound_inputs[i].value_index] = hm2_shim_cell_get(bound_inputs[i].signal);
                 }
             }
+            hm2_region_set_bus(&region, cycle, bus_state, bus_fault);
             hm2_region_publish(&region, cycle);
             published = cycle;
         }
@@ -665,6 +865,7 @@ int main(int argc, char **argv) {
     hm2_region_destroy(&region);
     free(bound_inputs);
     free(bound_outputs);
+    free(fixed_pins);
     hm2_shim_fini();
     hm2_config_free(&config);
     return 0;
@@ -679,6 +880,7 @@ fail:
     hm2_shim_flush_log();
     free(bound_inputs);
     free(bound_outputs);
+    free(fixed_pins);
     hm2_shim_fini();
     hm2_config_free(&config);
     return 1;

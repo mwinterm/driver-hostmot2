@@ -57,12 +57,15 @@ size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_bloc
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs);
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config);
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,
-                        uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index);
+                        uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index,
+                        uint32_t flags);
 void hm2_region_set_state(hm2_region *region, uint32_t state);
 double *hm2_region_inputs(hm2_region *region, uint64_t cycle);
 const double *hm2_region_outputs(hm2_region *region, uint64_t cycle);
 void hm2_region_seed_output(hm2_region *region, size_t index, double value);
 uint64_t hm2_region_begin(hm2_region *region);
+/* Whether the board answers, for cycle `cycle` (channel 2.2.0, ADR 0045 §3). */
+void hm2_region_set_bus(hm2_region *region, uint64_t cycle, uint32_t state, uint32_t fault);
 void hm2_region_publish(hm2_region *region, uint64_t cycle);
 int hm2_region_collect(hm2_region *region, uint64_t *answered);
 uint32_t hm2_region_state(hm2_region *region);
@@ -83,6 +86,12 @@ void hm2_region_destroy(hm2_region *region);
  *                                config, debug.
  *   param.<hal name>  = <number> a HAL parameter, exactly what a `setp` line
  *                                sets: an encoder scale, a stepgen's timing.
+ *   pin.<hal name>    = <value>  a pin's value, fixed: what a `setp` line on a
+ *                                pin nothing drives sets -- a stepgen's
+ *                                control-type, a DPLL timer, an encoder's
+ *                                quad-error-enable. `true`, `false` or a
+ *                                number. The pin is then published for
+ *                                reading only (ADR 0045 §2).
  */
 typedef struct {
     char region[256];
@@ -121,6 +130,12 @@ typedef struct {
     const char **param_names;
     double *param_values;
     size_t param_count;
+
+    /* pin.<hal name> = value, and the line each came from */
+    const char **pin_names;
+    double *pin_values;
+    int *pin_lines;
+    size_t pin_count;
 } hm2_config;
 
 int hm2_config_load(hm2_config *config, const char *path);
