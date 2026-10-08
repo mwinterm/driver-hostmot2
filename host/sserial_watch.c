@@ -16,6 +16,7 @@
  * Copyright (c) 2026 the driver-hostmot2 contributors
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,7 +66,12 @@ int sserial_watch_add(const hm2_shim_signal *signal) {
 
 size_t sserial_watched(void) { return watched; }
 
-uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, int gap_late, uint64_t so_far) {
+double sserial_transfer_wait(double since_write_s, double transfer_s) {
+    return since_write_s < transfer_s ? transfer_s - since_write_s : 0.0;
+}
+
+uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *before,
+                             double wake_late_s, uint64_t so_far) {
     uint64_t seen = 0;
     for (size_t i = 0; i < watched; i++) {
         double count = hm2_shim_cell_get(pins[i]);
@@ -73,14 +79,25 @@ uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, int gap_late, uint64_
             seen++;
             uint64_t number = so_far + seen;
             if (number <= SSERIAL_FAULTS_LOGGED || number % SSERIAL_FAULTS_LOGGED == 0) {
+                char answered[64];
+                if (before->answer_s > 0.0) {
+                    snprintf(answered, sizeof(answered), "answered %.0f us after the publish",
+                             before->answer_s * 1e6);
+                } else if (before->answer_s < 0.0) {
+                    snprintf(answered, sizeof(answered),
+                             "had not answered by the send deadline");
+                } else {
+                    snprintf(answered, sizeof(answered), "was not waited for");
+                }
                 hm2_log(HM2_LOG_WARN,
                         "Smart Serial port %d: fault %llu, cycle %llu: its transfer had not "
                         "finished at this period's read, or failed. The previous write ended "
-                        "%.0f us before the read%s; fault count %.0f%s",
+                        "%.0f us before the read. The period before woke %.0f us late, its "
+                        "read took %.0f us, the core %s and its write took %.0f us; this one "
+                        "woke %.0f us late. Fault count %.0f%s",
                         ports[i], (unsigned long long)number, (unsigned long long)cycle,
-                        gap_s * 1e6,
-                        gap_late ? ", at the send deadline -- the core had not answered" : "",
-                        count,
+                        gap_s * 1e6, before->wake_late_s * 1e6, before->read_s * 1e6, answered,
+                        before->write_s * 1e6, wake_late_s * 1e6, count,
                         number == SSERIAL_FAULTS_LOGGED ? "; from here every 100th is logged"
                                                         : "");
             }

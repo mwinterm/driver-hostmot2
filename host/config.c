@@ -173,7 +173,11 @@ int hm2_config_load(hm2_config *config, const char *path) {
      * LBP16 round trip over UDP per cycle. `worst_case_cycle_ns` is what this
      * process tells the core it needs, and the core refuses a machine whose
      * cycle it does not fit -- so it is deliberately not the same number as
-     * the cycle, and a bench measures it rather than this file guessing.
+     * the cycle, and it is measured rather than guessed: before the region
+     * exists the card is read and written for `measure_cycles` periods, a
+     * second, and the worst read and write of those after the first tenth is
+     * declared with `worst_case_margin`, half again. A figure in the file is
+     * declared as it is, the measurement logged beside it.
      *
      * The watchdogs are ADR 0011's: the core gives up on a channel after
      * `core_watchdog_cycles`, this process takes the drives down after
@@ -191,7 +195,15 @@ int hm2_config_load(hm2_config *config, const char *path) {
     config->response_watchdog_cycles = 100;
     config->drive_watchdog_us = 10000;
     config->spin_iterations = 0;
-    config->worst_case_cycle_ns = 800000;
+    config->worst_case_cycle_ns = 0;
+    config->measure_cycles = 1000;
+    config->worst_case_margin = 1.5;
+    /* A Smart Serial transfer that has not finished by the next read is a
+       fault, and one the port is stopped for twenty of in a row; under load
+       on a Pi 4 the period's write ended 11 to 56 us before the read. A
+       read that would come sooner than this waits instead (the control's
+       ADR 0045 follow-up, measured on the WF41C). */
+    config->sserial_transfer_us = 150;
     config->send_deadline = 0.8;
     /* The core's answer written in the period it was published in (ADR
        0046): sample to command is a read and the core's computation rather
@@ -268,6 +280,12 @@ int hm2_config_load(hm2_config *config, const char *path) {
             config->cycle_us = (uint32_t)strtoul(value, NULL, 0);
         } else if (strcmp(key, "worst_case_cycle_ns") == 0) {
             config->worst_case_cycle_ns = strtoull(value, NULL, 0);
+        } else if (strcmp(key, "measure_cycles") == 0) {
+            config->measure_cycles = (uint32_t)strtoul(value, NULL, 0);
+        } else if (strcmp(key, "worst_case_margin") == 0) {
+            config->worst_case_margin = strtod(value, NULL);
+        } else if (strcmp(key, "sserial_transfer_us") == 0) {
+            config->sserial_transfer_us = (uint32_t)strtoul(value, NULL, 0);
         } else if (strcmp(key, "core_watchdog_cycles") == 0) {
             config->core_watchdog_cycles = (uint32_t)strtoul(value, NULL, 0);
         } else if (strcmp(key, "response_watchdog_cycles") == 0) {
@@ -320,6 +338,30 @@ int hm2_config_load(hm2_config *config, const char *path) {
     }
     if (config->cycle_us == 0) {
         hm2_log(HM2_LOG_ERROR, "%s: cycle_us is zero", path);
+        hm2_config_free(config);
+        return -1;
+    }
+    if (config->worst_case_cycle_ns == 0 && config->measure_cycles < 10) {
+        hm2_log(HM2_LOG_ERROR,
+                "%s: measure_cycles is %u; the worst cycle is measured over at least 10 "
+                "periods, or worst_case_cycle_ns states it",
+                path, config->measure_cycles);
+        hm2_config_free(config);
+        return -1;
+    }
+    if (!(config->worst_case_margin >= 1.0)) {
+        hm2_log(HM2_LOG_ERROR,
+                "%s: worst_case_margin is %g; the measured worst is declared with a margin of "
+                "1 or more",
+                path, config->worst_case_margin);
+        hm2_config_free(config);
+        return -1;
+    }
+    if (config->sserial_transfer_us >= config->cycle_us) {
+        hm2_log(HM2_LOG_ERROR,
+                "%s: sserial_transfer_us is %u, which is no shorter than the %u us cycle: "
+                "every read would wait",
+                path, config->sserial_transfer_us, config->cycle_us);
         hm2_config_free(config);
         return -1;
     }

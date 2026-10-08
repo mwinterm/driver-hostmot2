@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <rtapi.h>
 #include <hal.h>
@@ -15,15 +16,16 @@
 #include "hm2_host.h"
 
 static int logged;
+static char last_line[1024];
 
 /* hm2-host's log, which the watch writes its faults to. */
 void hm2_log(int level, const char *fmt, ...) {
     (void)level;
     va_list args;
     va_start(args, fmt);
-    vprintf(fmt, args);
+    vsnprintf(last_line, sizeof(last_line), fmt, args);
     va_end(args);
-    printf("\n");
+    printf("%s\n", last_line);
     logged++;
 }
 
@@ -64,29 +66,43 @@ int main(void) {
     const hm2_shim_signal *count0 = hm2_shim_signal_at(0);
     const hm2_shim_signal *count1 = hm2_shim_signal_at(1);
     uint64_t faults = 0;
-    faults += sserial_faults_seen(1, 0.0009, 0, faults);
+    /* A period that answered in time, and one whose core did not. */
+    const hm2_period quiet = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = 0.00004, .write_s = 0.00002};
+    const hm2_period late = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = -1.0, .write_s = 0.00002};
+    faults += sserial_faults_seen(1, 0.0009, &quiet, 0.0, faults);
     expect(faults == 0, "no fault while nothing rose");
 
     /* Both ports fault in one cycle, as on the WF41C at 00:01:00. */
     hm2_shim_cell_set(count0, 10);
     hm2_shim_cell_set(count1, 10);
-    faults += sserial_faults_seen(2, 0.00015, 1, faults);
+    faults += sserial_faults_seen(2, 0.00015, &late, 0.0, faults);
     expect(faults == 2, "one fault per port that rose");
+    expect(strstr(last_line, "ended 150 us before the read") != NULL, "the gap is said");
+    expect(strstr(last_line, "read took 300 us, the core had not answered by the send "
+                             "deadline and its write took 20 us") != NULL,
+           "the period before is said, its late answer among it");
 
     /* The driver's decay is no fault. */
     for (int n = 9; n >= 0; n--) {
         hm2_shim_cell_set(count0, n);
         hm2_shim_cell_set(count1, n);
-        faults += sserial_faults_seen(3, 0.0009, 0, faults);
+        faults += sserial_faults_seen(3, 0.0009, &quiet, 0.0, faults);
     }
     expect(faults == 2, "a falling count is no fault");
 
     /* A rise on a count that had not decayed to zero is still one. */
     hm2_shim_cell_set(count1, 10);
-    faults += sserial_faults_seen(4, 0.0009, 0, faults);
+    faults += sserial_faults_seen(4, 0.0009, &quiet, 0.0, faults);
     hm2_shim_cell_set(count1, 19);
-    faults += sserial_faults_seen(5, 0.0009, 0, faults);
+    faults += sserial_faults_seen(5, 0.0009, &quiet, 0.0, faults);
     expect(faults == 4, "every rise is one fault");
+
+    /* The transfer guard: a read 30 us after the write waits 120 us more for
+       a 150 us transfer, and one 400 us after it does not wait. */
+    expect(sserial_transfer_wait(0.000030, 0.000150) > 0.000119 &&
+               sserial_transfer_wait(0.000030, 0.000150) < 0.000121,
+           "a read too soon waits for the rest of the transfer");
+    expect(sserial_transfer_wait(0.000400, 0.000150) == 0.0, "a read late enough does not wait");
     expect(logged == 4, "every fault logged");
 
     hm2_shim_fini();

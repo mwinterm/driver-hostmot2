@@ -70,7 +70,7 @@ HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o))
 
 .PHONY: all check clean
 all: $(BUILD)/hm2-host $(BUILD)/libhostmot2.so $(BUILD)/libhm2_eth.so \
-     $(BUILD)/libhm2_test.so
+     $(BUILD)/libhm2_test.so $(BUILD)/libsetsserial.so
 
 $(BUILD)/libhm2shim.so: $(SHIM_OBJ)
 	@mkdir -p $(@D)
@@ -94,6 +94,17 @@ $(BUILD)/hm2-host: $(HOST_OBJ) $(BUILD)/libhm2shim.so
 $(BUILD)/libhm2_test.so: $(TEST_OBJ) $(BUILD)/libhostmot2.so
 	@mkdir -p $(@D)
 	$(CC) -shared -o $@ $(TEST_OBJ) -L$(BUILD) -lhostmot2 -lhm2shim $(LDFLAGS) $(LDLIBS)
+
+# Upstream's setsserial, unmodified: what `hm2-host --setsserial` runs to set a
+# Smart Serial remote's stored setting or flash its firmware.
+$(BUILD)/libsetsserial.so: $(BUILD)/setsserial/setsserial.o $(BUILD)/libhostmot2.so
+	@mkdir -p $(@D)
+	$(CC) -shared -o $@ $(BUILD)/setsserial/setsserial.o -L$(BUILD) -lhostmot2 -lhm2shim \
+		$(LDFLAGS) $(LDLIBS)
+
+$(BUILD)/setsserial/%.o: $(UPSTREAM)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/test/%.o: $(UPSTREAM)/%.c
 	@mkdir -p $(@D)

@@ -109,10 +109,34 @@ The process says how that goes, as inputs beside the driver's pins, in SI:
 `hm2-host.answers-late` (a count). A recorder on the control's side
 (LeafSCOPE) records them like any pin; the worst of each is logged at stop.
 
+**The worst cycle is measured, not guessed.** The channel header carries
+what a cycle of this process costs at worst, and the control refuses a
+machine whose cycle that does not fit. The region is made under a name no
+control looks for (`<region>.measuring`), and right before the cycle the
+process reads and writes the card for `measure_cycles` periods (1000, a
+second at 1 ms) at the cycle's own period and priority; it declares the
+worst read plus write after the first tenth, times `worst_case_margin`
+(1.5), and only then gives the region its name, so no control reads the
+figure before it is made. The measurement's first write arms the card's
+watchdog, so it comes after everything slow and the cycle follows it at
+once: the first cycle's write is logged with how long after the last
+measured one it came, beside the watchdog's timeout. On the fake board,
+where a read is a memory copy rather than a UDP round trip to a card:
+
+```
+worst cycle: 7 us declared, measured 4 us at worst over 900 period(s) (read 3 us, write 3 us) times 1.50
+```
+
+A `worst_case_cycle_ns` in the file is declared as it is, the measurement
+logged beside it.
+
 **Every Smart Serial fault is counted**, in `hm2-host.sserial-faults`, and
 logged with its cycle, how long before that period's read the previous write
-had ended -- the time the port's transfer had -- and whether that write
-waited for an answer that did not come in time. The driver itself says
+had ended -- the time the port's transfer had -- and what the period before
+looked like: how late it woke, how long its read took, when the control
+answered it or that it had not by the send deadline, and how long its write
+took. A short transfer then says which was slow: the card's reply, this
+process's wake-up, the control, or the write. The driver itself says
 "DoIt not cleared from previous servo thread" once, at a port's fourth
 fault, and its `fault-count` pin decays to zero within cycles, so neither
 says how often a port faults. A fault costs the port that period's update
@@ -121,6 +145,41 @@ port faulting about twenty times in quick succession is stopped for good.
 A port that has just been started may fault a few times while it comes up --
 the driver lets four pass before it says anything -- and those are counted
 too.
+
+**A transfer is given its time.** A read that would come less than
+`sserial_transfer_us` (150) after the write that started a Smart Serial
+transfer waits until the transfer has had that long; each wait is counted in
+`hm2-host.sserial-waits` and logged as the faults are. On the WF41C's Pi 4,
+memory-heavy work on the other cores slowed every part of the period at
+once -- the read from about 300 to 416 us, the control's answer from 33 to
+273 us, the write from under 47 to 228 us -- and the write ended tens of
+microseconds before the next read: a fault each time, and twenty in a row
+stop the port. A wait costs that period's start instead, which the control
+takes as a late release. Zero turns the guard off; it is off on a board
+with no Smart Serial port.
+
+**A remote's stored settings and firmware: `--setsserial`.** LinuxCNC's
+`setsserial` without LinuxCNC on the machine. With the control stopped:
+
+```sh
+build/hm2-host --setsserial machine/hm2-host.conf build
+build/hm2-host --setsserial machine/hm2-host.conf build set hm2_7i92.0.7i77.0.0.nv<name> <value>
+build/hm2-host --setsserial machine/hm2-host.conf build flash hm2_7i92.0.7i77.0.0 ./7i77.BIN
+```
+
+The driver is loaded from the same file as for a run, and every Smart Serial
+remote's parameters are listed on stdout, the stored ones -- `nv...` --
+marked `stored`, its firmware revisions among the rest. A command is run by
+upstream's own `setsserial.c`, unmodified (`build/libsetsserial.so`): `set`
+writes a stored setting, `flash` a remote's firmware from a `.BIN` file,
+whose path has a slash in it or is looked for under `HM2_FIRMWARE_PATH`
+(`/lib/firmware`). A remote reads its stored settings when it starts, so a
+new value is in force, and listed, after the remote has been powered off and
+on. Flashing needs the board at 115200 baud, by jumper and by
+`sserial_baudrate`, as upstream says. Nothing is published and nothing
+cycles: the card's watchdog stops its outputs meanwhile, as under LinuxCNC's
+`halrun`. A region the file names that exists -- a control running on the
+card, or one that died without removing it -- refuses the lot.
 
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the

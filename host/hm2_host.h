@@ -38,12 +38,39 @@ int sserial_port_of(const char *name);
 int sserial_watch_add(const hm2_shim_signal *signal);
 size_t sserial_watched(void);
 /*
+ * What a period looked like, logged with a fault, so one fault says whether
+ * the card answered slowly, this process woke late or the core did [s].
+ */
+typedef struct {
+    /* How late the period woke against its schedule. */
+    double wake_late_s;
+    /* How long its read took: the round trip to the card. */
+    double read_s;
+    /* When the core answered its publish: positive, after the publish; zero,
+       not waited for (no core attached, or not same cycle); negative, not by
+       the send deadline, so the write waited until then. */
+    double answer_s;
+    /* From the answer, or the deadline, to the end of the write: the core's
+       outputs taken into the pins and the driver's write, the packet built
+       and sent. */
+    double write_s;
+} hm2_period;
+
+/*
  * After a write: how many watched ports' fault counts rose since the last
  * call, each logged with the cycle, how long before this period's read the
- * previous write had ended, whether that write waited for a core that did not
- * answer in time, and `so_far` the faults before these.
+ * previous write had ended (`gap_s`), the period before (`before`) and how
+ * late this one woke, and `so_far` the faults before these.
  */
-uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, int gap_late, uint64_t so_far);
+uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *before,
+                             double wake_late_s, uint64_t so_far);
+
+/*
+ * How long a read must wait so the Smart Serial transfer the last write
+ * started has `transfer_s` before it, when the write ended `since_write_s`
+ * ago: zero when it has had that already [s].
+ */
+double sserial_transfer_wait(double since_write_s, double transfer_s);
 
 /* ---------------------------------------------------------------------------
  * The region
@@ -77,6 +104,15 @@ typedef struct {
 size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out);
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs);
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config);
+/*
+ * The region under another name, in one step: a region made under a name no
+ * core looks for, finished, then given the name a core attaches to, so no
+ * core ever attaches to it half made. Linux keeps POSIX shared memory as
+ * files under /dev/shm, and a rename there is atomic.
+ */
+int hm2_region_rename(hm2_region *region, const char *name);
+/* The worst cycle the header declares, set before the region is named. */
+void hm2_region_declare_worst(hm2_region *region, uint64_t worst_case_cycle_ns);
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,
                         uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index,
                         uint32_t flags);
@@ -136,7 +172,21 @@ typedef struct {
     uint32_t response_watchdog_cycles;
     uint32_t drive_watchdog_us;
     uint32_t spin_iterations;
+    /* What this process declares it needs per cycle; zero to measure it. */
     uint64_t worst_case_cycle_ns;
+    /*
+     * The measurement: how many periods the card is read and written before
+     * the region exists, the first tenth of them not counted, and the margin
+     * the worst of the rest is declared with.
+     */
+    uint32_t measure_cycles;
+    double worst_case_margin;
+    /*
+     * The least time a Smart Serial transfer is given between the write that
+     * starts it and the read that looks for it [us]; zero for no guard. A
+     * read that would come sooner waits.
+     */
+    uint32_t sserial_transfer_us;
     /* How far into the period the outputs go on the wire, 0..1. */
     double send_deadline;
     /*

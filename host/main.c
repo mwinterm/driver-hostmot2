@@ -34,6 +34,7 @@
  */
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -311,7 +312,14 @@ static size_t bound_output_count;
  * after the driver's own, under names no HAL pin has. In SI, as everything on
  * the channel is: seconds, and a count.
  */
-enum { HOST_READ_TIME, HOST_ANSWER_TIME, HOST_ANSWERS_LATE, HOST_SSERIAL_FAULTS, HOST_SIGNALS };
+enum {
+    HOST_READ_TIME,
+    HOST_ANSWER_TIME,
+    HOST_ANSWERS_LATE,
+    HOST_SSERIAL_FAULTS,
+    HOST_SSERIAL_WAITS,
+    HOST_SIGNALS
+};
 static const struct {
     const char *name;
     uint32_t type;
@@ -321,6 +329,7 @@ static const struct {
     {"hm2-host.answer-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
     {"hm2-host.answers-late", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
     {"hm2-host.sserial-faults", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
+    {"hm2-host.sserial-waits", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
 };
 
 /* The pins `pin.` lines fixed, so binding publishes them for reading only. */
@@ -721,22 +730,279 @@ static void add_ns(struct timespec *when, long long ns) {
     }
 }
 
+/*
+ * The worst cycle this process declares in the channel header, where the
+ * core's start-up check reads it (§10.2): measured rather than guessed.
+ *
+ * Before the region has its name, so no core can attach and read the figure
+ * while it is still being made, and right before the cycle, the card is read
+ * and written for `measure_cycles` periods at the cycle's own period and
+ * priority -- what happens before a core attaches anyway: the driver's own
+ * values out, the watchdog armed by the first write and petted from then on,
+ * read then write as the cycle without one does, which leaves a Smart Serial
+ * transfer the rest of the period. The first tenth is not counted: the first
+ * packets and transactions and a cold cache are the start, not a cycle.
+ * What is declared is the worst read plus write of the rest, times
+ * `worst_case_margin`. A figure in the file is declared as it is, and the
+ * measurement is logged beside it.
+ */
+static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_funct *read,
+                                    const hm2_shim_funct *write, struct timespec *last_write) {
+    const long long period_ns = (long long)config->cycle_us * 1000LL;
+    const uint32_t skipped = config->measure_cycles / 10u;
+    double worst_s = 0.0;
+    double read_worst_s = 0.0;
+    double write_worst_s = 0.0;
+    uint32_t counted = 0;
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    for (uint32_t i = 0; i < config->measure_cycles && !stopping; i++) {
+        add_ns(&next, period_ns);
+        sleep_until(&next);
+        struct timespec start;
+        struct timespec between;
+        struct timespec end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        read->funct(read->arg, (long)period_ns);
+        clock_gettime(CLOCK_MONOTONIC, &between);
+        write->funct(write->arg, (long)period_ns);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        *last_write = end;
+        if (i < skipped) {
+            continue;
+        }
+        double read_s = seconds_between(&start, &between);
+        double write_s = seconds_between(&between, &end);
+        counted++;
+        if (read_s > read_worst_s) {
+            read_worst_s = read_s;
+        }
+        if (write_s > write_worst_s) {
+            write_worst_s = write_s;
+        }
+        if (read_s + write_s > worst_s) {
+            worst_s = read_s + write_s;
+        }
+    }
+    if (config->worst_case_cycle_ns > 0) {
+        if (counted > 0) {
+            hm2_log(HM2_LOG_INFO,
+                    "worst cycle: %.0f us declared, as the file says; measured %.0f us at worst "
+                    "over %u period(s) (read %.0f us, write %.0f us)",
+                    (double)config->worst_case_cycle_ns / 1e3, worst_s * 1e6, counted,
+                    read_worst_s * 1e6, write_worst_s * 1e6);
+        }
+        return config->worst_case_cycle_ns;
+    }
+    uint64_t declared = (uint64_t)(worst_s * config->worst_case_margin * 1e9) + 1u;
+    hm2_log(HM2_LOG_INFO,
+            "worst cycle: %.0f us declared, measured %.0f us at worst over %u period(s) (read "
+            "%.0f us, write %.0f us) times %.2f",
+            (double)declared / 1e3, worst_s * 1e6, counted, read_worst_s * 1e6,
+            write_worst_s * 1e6, config->worst_case_margin);
+    if (declared > (uint64_t)period_ns) {
+        hm2_log(HM2_LOG_WARN,
+                "the declared worst cycle, %.0f us, does not fit the %u us cycle: the core will "
+                "refuse this machine with both figures named",
+                (double)declared / 1e3, config->cycle_us);
+    }
+    return declared;
+}
+
+/*
+ * The cycle's first write against the measurement's last: the card's watchdog
+ * is armed and counting between them, so the gap is said beside its timeout
+ * once, and warned of where it takes half of it.
+ */
+static void first_write_after_measuring(const struct timespec *measured,
+                                        const struct timespec *written) {
+    if (!measured->tv_sec) {
+        return;
+    }
+    double gap_s = seconds_between(measured, written);
+    hm2_shim_signal timeout = {0};
+    double timeout_s = hm2_shim_param_ending(".watchdog.timeout_ns", &timeout)
+                           ? hm2_shim_cell_get(&timeout) * 1e-9
+                           : 0.0;
+    if (timeout_s > 0.0 && gap_s * 2.0 > timeout_s) {
+        hm2_log(HM2_LOG_WARN,
+                "the cycle's first write came %.1f ms after the measurement's last, more than "
+                "half the card's %.1f ms watchdog",
+                gap_s * 1e3, timeout_s * 1e3);
+    } else if (timeout_s > 0.0) {
+        hm2_log(HM2_LOG_INFO,
+                "the cycle's first write came %.1f ms after the measurement's last, within "
+                "the card's %.1f ms watchdog",
+                gap_s * 1e3, timeout_s * 1e3);
+    } else {
+        hm2_log(HM2_LOG_INFO,
+                "the cycle's first write came %.1f ms after the measurement's last; the board "
+                "has no watchdog",
+                gap_s * 1e3);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * --setsserial: a Smart Serial remote's stored settings and firmware
+ * ------------------------------------------------------------------------- */
+
+/*
+ * LinuxCNC's `setsserial` without LinuxCNC. The driver is loaded from the same
+ * file as for a run, every Smart Serial remote's parameters are listed -- its
+ * stored settings, the `nv...` ones, and its revisions among them -- and a
+ * command, if there is one, is run by upstream's own setsserial module,
+ * unmodified: `set <parameter> <value>` writes a stored setting, `flash
+ * <remote> <file>.BIN` the remote's firmware. Then the process exits: no
+ * region, no cycle, and the card's watchdog stops its outputs meanwhile, as
+ * under LinuxCNC's halrun.
+ */
+static int setsserial_command(const char *word) {
+    return strcmp(word, "set") == 0 || strcmp(word, "flash") == 0;
+}
+
+/*
+ * A control attached to the card, or one that died and left its region: the
+ * card answers whoever talks to it, and two masters writing it is how a
+ * remote is left half-flashed. So the region the file names must not exist.
+ */
+static int region_in_use(const hm2_config *config) {
+    int fd = shm_open(config->region, O_RDONLY, 0);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    hm2_log(HM2_LOG_ERROR,
+            "%s exists: a control is running on this card, or one stopped without removing "
+            "it. Stop the control first; if no hm2-host is running, remove /dev/shm%s",
+            config->region, config->region);
+    return 1;
+}
+
+/*
+ * Every parameter of a Smart Serial remote, on stdout: hostmot2's own
+ * `hm2_get_sserial` says which, as it does for setsserial -- a parameter is a
+ * remote's when the remote's name is in it.
+ */
+static size_t list_sserial(void *generic) {
+    void *symbol = dlsym(generic, "hm2_get_sserial");
+    void *(*find)(void **, const char *) = NULL;
+    memcpy(&find, &symbol, sizeof(symbol));
+    if (!find) {
+        hm2_log(HM2_LOG_ERROR, "libhostmot2 exports no hm2_get_sserial");
+        return 0;
+    }
+    size_t listed = 0;
+    for (size_t i = 0; i < hm2_shim_param_count(); i++) {
+        hm2_shim_signal view;
+        int writable = 0;
+        if (!hm2_shim_param_view(i, &view, &writable)) {
+            continue;
+        }
+        void *board = NULL;
+        if (!find(&board, view.name)) {
+            continue;
+        }
+        const char *leaf = strrchr(view.name, '.');
+        int stored = leaf && strncmp(leaf + 1, "nv", 2) == 0;
+        printf("%-56s %14.10g%s\n", view.name, hm2_shim_cell_get(&view),
+               stored ? "  stored" : "");
+        listed++;
+    }
+    fflush(stdout);
+    return listed;
+}
+
+/* Upstream's setsserial module, given `command` as its `cmd` parameter. */
+static int run_setsserial(const char *module_dir, const char *command) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/libsetsserial.so", module_dir);
+    hm2_module module = {0};
+    if (load_module(&module, path, 0) != 0) {
+        return -1;
+    }
+    if (hm2_shim_set_module_param(module.handle, "cmd", 0, command) != 0) {
+        hm2_log(HM2_LOG_ERROR, "%s declares no cmd parameter", path);
+        return -1;
+    }
+    hm2_log(HM2_LOG_INFO, "setsserial: %s", command);
+    int status = module.app_main();
+    if (module.app_exit) {
+        module.app_exit();
+    }
+    return status;
+}
+
+static int setsserial_mode(void *generic, const char *module_dir, char **words, int count) {
+    size_t listed = list_sserial(generic);
+    if (listed == 0) {
+        hm2_log(HM2_LOG_WARN, "no Smart Serial remote answered: nothing to list or set");
+    }
+    if (count == 0) {
+        return listed > 0 ? 0 : 1;
+    }
+    char command[1024] = "";
+    for (int i = 0; i < count; i++) {
+        if (strlen(command) + strlen(words[i]) + 2 > sizeof(command)) {
+            hm2_log(HM2_LOG_ERROR, "the setsserial command is too long");
+            return 1;
+        }
+        if (i > 0) {
+            strcat(command, " ");
+        }
+        strcat(command, words[i]);
+    }
+    int status = run_setsserial(module_dir, command);
+    if (status != 0) {
+        hm2_log(HM2_LOG_ERROR, "setsserial failed (%d): %s", status, command);
+        return 1;
+    }
+    hm2_log(HM2_LOG_INFO,
+            "setsserial: done. A remote reads its stored settings when it starts: the new "
+            "value is in force, and listed here, after the remote has been powered off and on");
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
+    int setsserial = argc > 1 && strcmp(argv[1], "--setsserial") == 0;
+    int first = setsserial ? 2 : 1;
+    if (argc < first + 1) {
         fprintf(stderr,
                 "usage: hm2-host <config file> [module directory]\n"
+                "       hm2-host --setsserial <config file> [module directory] [command]\n"
                 "\n"
                 "Runs LinuxCNC's HostMot2 driver as a process of its own and publishes\n"
                 "every HAL pin it declares into a shared region the control attaches to\n"
                 "(ADR 0022). What a pin means is said in the control's machine\n"
-                "description, not here.\n");
+                "description, not here.\n"
+                "\n"
+                "--setsserial, with the control stopped: lists every Smart Serial remote's\n"
+                "parameters, its stored settings marked, and runs LinuxCNC's setsserial\n"
+                "on a command:\n"
+                "  set <remote's parameter> <value>   a stored setting, one the list marks\n"
+                "  flash <remote> <path>.BIN          the remote's firmware\n");
         return 2;
     }
-    const char *config_path = argv[1];
-    const char *module_dir = argc > 2 ? argv[2] : ".";
+    const char *config_path = argv[first];
+    const char *module_dir = ".";
+    int command_at = first + 1;
+    if (argc > command_at && !setsserial_command(argv[command_at])) {
+        module_dir = argv[command_at];
+        command_at++;
+    }
+    int command_words = argc > command_at ? argc - command_at : 0;
+    if (command_words > 0 && (!setsserial || command_words != 3 ||
+                              !setsserial_command(argv[command_at]))) {
+        fprintf(stderr, "hm2-host: a command is `set <parameter> <value>` or `flash <remote> "
+                        "<path>.BIN`, after --setsserial\n");
+        return 2;
+    }
 
     hm2_config config;
     if (hm2_config_load(&config, config_path) != 0) {
+        return 1;
+    }
+    if (setsserial && region_in_use(&config)) {
+        hm2_config_free(&config);
         return 1;
     }
     hm2_log_set_level(config.log_level);
@@ -834,6 +1100,20 @@ int main(int argc, char **argv) {
         goto fail;
     }
 
+    if (setsserial) {
+        int failed = setsserial_mode(generic.handle, module_dir, argv + command_at, command_words);
+        if (transport.app_exit) {
+            transport.app_exit();
+        }
+        if (generic.app_exit) {
+            generic.app_exit();
+        }
+        hm2_shim_flush_log();
+        hm2_shim_fini();
+        hm2_config_free(&config);
+        return failed;
+    }
+
     const hm2_shim_funct *read = hm2_shim_funct_ending(".read");
     const hm2_shim_funct *write = hm2_shim_funct_ending(".write");
     if (!read || !write) {
@@ -849,8 +1129,21 @@ int main(int argc, char **argv) {
         goto fail;
     }
 
+    /*
+     * The region is made under a name no core attaches to and named only once
+     * it is finished, its worst cycle measured (declare_worst_cycle). The
+     * measurement's first write is the driver's first, which arms the card's
+     * watchdog, so from it to the cycle's first write nothing may take as
+     * long as the watchdog's timeout: everything slow -- the region, the
+     * signal table and its log -- comes before it, and the log goes through
+     * the ring from the measurement on. Made the other way round, the setup
+     * after the measurement let a WF41C's watchdog bite, and its Smart
+     * Serial remotes lost contact and both ports were stopped.
+     */
+    char measuring[sizeof(config.region) + 16];
+    snprintf(measuring, sizeof(measuring), "%s.measuring", config.region);
     hm2_region region;
-    if (hm2_region_create(&region, config.region, bound_input_count + HOST_SIGNALS,
+    if (hm2_region_create(&region, measuring, bound_input_count + HOST_SIGNALS,
                           bound_output_count) != 0) {
         goto fail;
     }
@@ -861,7 +1154,7 @@ int main(int argc, char **argv) {
         .response_watchdog_cycles = config.response_watchdog_cycles,
         .drive_watchdog_us = config.drive_watchdog_us,
         .spin_iterations = config.spin_iterations,
-        .worst_case_cycle_ns = config.worst_case_cycle_ns,
+        .worst_case_cycle_ns = 0,
         .flags = config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u,
     };
     hm2_region_describe(&region, &header);
@@ -880,6 +1173,16 @@ int main(int argc, char **argv) {
         bound_outputs[i].last = hm2_shim_cell_get(bound_outputs[i].signal);
         hm2_region_seed_output(&region, bound_outputs[i].value_index, bound_outputs[i].last);
     }
+
+    /* At the cycle's priority from here on, the measurement included. */
+    ask_for_realtime(&config);
+    log_to_ring();
+    struct timespec measured_write = {0};
+    hm2_region_declare_worst(&region, declare_worst_cycle(&config, read, write, &measured_write));
+    if (stopping || hm2_region_rename(&region, config.region) != 0) {
+        hm2_region_destroy(&region);
+        goto fail;
+    }
     hm2_region_set_state(&region, CNC_OUTBOARD_STATE_RUNNING);
 
     hm2_log(HM2_LOG_INFO,
@@ -889,8 +1192,6 @@ int main(int argc, char **argv) {
             (unsigned long long)region.shm->config.generation);
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
-    log_to_ring();
-    ask_for_realtime(&config);
     hm2_shim_enter_cycle();
 
     const long long period_ns = (long long)config.cycle_us * 1000LL;
@@ -950,11 +1251,31 @@ int main(int argc, char **argv) {
                 sserial_watched());
     }
     uint64_t sserial_faults = 0;
+    /*
+     * The transfer guard: a read that would come less than
+     * `sserial_transfer_us` after the write that started a Smart Serial
+     * transfer waits until it has had that long. Under memory load on a Pi
+     * 4 every part of the period slows at once -- the read, the core's
+     * answer, the write -- and the write ended tens of microseconds before
+     * the next read, which found the transfer unfinished: a fault, and one
+     * of twenty that stop the port. Waiting costs that period's start
+     * instead, which the core's timebase takes as a late release.
+     */
+    const double transfer_s = sserial_watched() > 0 ? config.sserial_transfer_us * 1e-6 : 0.0;
+    uint64_t sserial_waits = 0;
+    if (transfer_s > 0.0) {
+        hm2_log(HM2_LOG_INFO,
+                "a Smart Serial transfer is given %u us between a write and the next read: a "
+                "read that would come sooner waits, counted in hm2-host.sserial-waits",
+                config.sserial_transfer_us);
+    }
     /* When the last write ended, and whether its answer came in time: what
        the next read's Smart Serial transfer had to work with. */
     struct timespec written_at = {0};
-    int written_late = 0;
     double gap_s = 0.0;
+    /* The period before this one and this one, for a fault's line. */
+    hm2_period before = {0};
+    hm2_period now_period = {0};
     int link_dead = 0;
     int bitten = 0;
 
@@ -987,6 +1308,29 @@ int main(int argc, char **argv) {
             break;
         }
 
+        /* When the period began, before any wait for a transfer. */
+        struct timespec woke;
+        clock_gettime(CLOCK_MONOTONIC, &woke);
+        if (transfer_s > 0.0 && written_at.tv_sec) {
+            double wait_s = sserial_transfer_wait(seconds_between(&written_at, &woke), transfer_s);
+            if (wait_s > 0.0) {
+                struct timespec until = woke;
+                add_ns(&until, (long long)(wait_s * 1e9));
+                sleep_until(&until);
+                sserial_waits++;
+                if (sserial_waits <= 100 || sserial_waits % 100 == 0) {
+                    hm2_log(HM2_LOG_WARN,
+                            "Smart Serial: the read waited %.0f us, wait %llu, so the transfer "
+                            "the last write started had %u us. The period before woke %.0f us "
+                            "late, its read took %.0f us and its write %.0f us%s",
+                            wait_s * 1e6, (unsigned long long)sserial_waits,
+                            config.sserial_transfer_us, now_period.wake_late_s * 1e6,
+                            now_period.read_s * 1e6, now_period.write_s * 1e6,
+                            sserial_waits == 100 ? "; from here every 100th is logged" : "");
+                }
+            }
+        }
+
         /*
          * Not same cycle, the shape before ADR 0046: the core's answer to the
          * *previous* publish goes into the pins first, and read and write
@@ -1006,19 +1350,24 @@ int main(int argc, char **argv) {
         struct timespec read_start;
         struct timespec read_end;
         clock_gettime(CLOCK_MONOTONIC, &read_start);
-        int gap_late = written_late;
+        before = now_period;
+        now_period = (hm2_period){.wake_late_s = seconds_between(&next, &woke)};
         gap_s = written_at.tv_sec ? seconds_between(&written_at, &read_start) : 0.0;
         read->funct(read->arg, (long)period_ns);
         clock_gettime(CLOCK_MONOTONIC, &read_end);
         read_s = seconds_between(&read_start, &read_end);
+        now_period.read_s = read_s;
         if (read_s > read_max_s) {
             read_max_s = read_s;
         }
         if (!config.same_cycle) {
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
-            written_late = 0;
-            sserial_faults += sserial_faults_seen(published + 1, gap_s, gap_late, sserial_faults);
+            now_period.write_s = seconds_between(&read_end, &written_at);
+            first_write_after_measuring(&measured_write, &written_at);
+            measured_write.tv_sec = 0;
+            sserial_faults += sserial_faults_seen(published + 1, gap_s, &before,
+                                                  now_period.wake_late_s, sserial_faults);
         }
 
         if (!link_dead && has_io_error && hm2_shim_cell_get(&io_error) != 0.0) {
@@ -1098,6 +1447,7 @@ int main(int argc, char **argv) {
                 values[bound_input_count + HOST_ANSWER_TIME] = answer_s;
                 values[bound_input_count + HOST_ANSWERS_LATE] = (double)answers_late;
                 values[bound_input_count + HOST_SSERIAL_FAULTS] = (double)sserial_faults;
+                values[bound_input_count + HOST_SSERIAL_WAITS] = (double)sserial_waits;
             }
             hm2_region_set_bus(&region, cycle, bus_state, bus_fault);
             clock_gettime(CLOCK_MONOTONIC, &published_at);
@@ -1123,7 +1473,6 @@ int main(int argc, char **argv) {
          * and output behind it.
          */
         if (config.same_cycle) {
-            written_late = 0;
             if (cycle != 0 && hm2_region_answered(&region) > 0) {
                 struct timespec send = next;
                 add_ns(&send, send_ns);
@@ -1131,6 +1480,7 @@ int main(int argc, char **argv) {
                     struct timespec now;
                     clock_gettime(CLOCK_MONOTONIC, &now);
                     answer_s = seconds_between(&published_at, &now);
+                    now_period.answer_s = answer_s;
                     answers_on_time++;
                     answer_sum_s += answer_s;
                     if (answer_s > answer_max_s) {
@@ -1138,14 +1488,19 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     answers_late++;
-                    written_late = 1;
+                    now_period.answer_s = -1.0;
                 }
             }
+            struct timespec answered_at;
+            clock_gettime(CLOCK_MONOTONIC, &answered_at);
             take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
-            sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, gap_late,
-                                                  sserial_faults);
+            now_period.write_s = seconds_between(&answered_at, &written_at);
+            first_write_after_measuring(&measured_write, &written_at);
+            measured_write.tv_sec = 0;
+            sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, &before,
+                                                  now_period.wake_late_s, sserial_faults);
         }
 
         /* The core said it is going away. Nothing to wait for. */
@@ -1171,8 +1526,9 @@ int main(int argc, char **argv) {
             (unsigned long long)stale);
     hm2_log(HM2_LOG_INFO, "the read took %.0f us at worst", read_max_s * 1e6);
     if (sserial_watched() > 0) {
-        hm2_log(sserial_faults ? HM2_LOG_WARN : HM2_LOG_INFO, "Smart Serial: %llu fault(s)",
-                (unsigned long long)sserial_faults);
+        hm2_log(sserial_faults ? HM2_LOG_WARN : HM2_LOG_INFO,
+                "Smart Serial: %llu fault(s); %llu read(s) waited for a transfer",
+                (unsigned long long)sserial_faults, (unsigned long long)sserial_waits);
     }
     if (config.same_cycle) {
         hm2_log(HM2_LOG_INFO,
