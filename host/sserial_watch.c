@@ -66,6 +66,10 @@ int sserial_watch_add(const hm2_shim_signal *signal) {
 
 size_t sserial_watched(void) { return watched; }
 
+double sserial_transfer_wait(double since_write_s, double transfer_s) {
+    return since_write_s < transfer_s ? transfer_s - since_write_s : 0.0;
+}
+
 uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *before,
                              double wake_late_s, uint64_t so_far) {
     uint64_t seen = 0;

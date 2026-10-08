@@ -146,6 +146,18 @@ A port that has just been started may fault a few times while it comes up --
 the driver lets four pass before it says anything -- and those are counted
 too.
 
+**A transfer is given its time.** A read that would come less than
+`sserial_transfer_us` (150) after the write that started a Smart Serial
+transfer waits until the transfer has had that long; each wait is counted in
+`hm2-host.sserial-waits` and logged as the faults are. On the WF41C's Pi 4,
+memory-heavy work on the other cores slowed every part of the period at
+once -- the read from about 300 to 416 us, the control's answer from 33 to
+273 us, the write from under 47 to 228 us -- and the write ended tens of
+microseconds before the next read: a fault each time, and twenty in a row
+stop the port. A wait costs that period's start instead, which the control
+takes as a late release. Zero turns the guard off; it is off on a board
+with no Smart Serial port.
+
 **A remote's stored settings and firmware: `--setsserial`.** LinuxCNC's
 `setsserial` without LinuxCNC on the machine. With the control stopped:
 

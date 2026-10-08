@@ -65,6 +65,13 @@ typedef struct {
 uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *before,
                              double wake_late_s, uint64_t so_far);
 
+/*
+ * How long a read must wait so the Smart Serial transfer the last write
+ * started has `transfer_s` before it, when the write ended `since_write_s`
+ * ago: zero when it has had that already [s].
+ */
+double sserial_transfer_wait(double since_write_s, double transfer_s);
+
 /* ---------------------------------------------------------------------------
  * The region
  * ------------------------------------------------------------------------- */
@@ -174,6 +181,12 @@ typedef struct {
      */
     uint32_t measure_cycles;
     double worst_case_margin;
+    /*
+     * The least time a Smart Serial transfer is given between the write that
+     * starts it and the read that looks for it [us]; zero for no guard. A
+     * read that would come sooner waits.
+     */
+    uint32_t sserial_transfer_us;
     /* How far into the period the outputs go on the wire, 0..1. */
     double send_deadline;
     /*

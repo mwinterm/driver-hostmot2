@@ -96,6 +96,13 @@ int main(void) {
     hm2_shim_cell_set(count1, 19);
     faults += sserial_faults_seen(5, 0.0009, &quiet, 0.0, faults);
     expect(faults == 4, "every rise is one fault");
+
+    /* The transfer guard: a read 30 us after the write waits 120 us more for
+       a 150 us transfer, and one 400 us after it does not wait. */
+    expect(sserial_transfer_wait(0.000030, 0.000150) > 0.000119 &&
+               sserial_transfer_wait(0.000030, 0.000150) < 0.000121,
+           "a read too soon waits for the rest of the transfer");
+    expect(sserial_transfer_wait(0.000400, 0.000150) == 0.0, "a read late enough does not wait");
     expect(logged == 4, "every fault logged");
 
     hm2_shim_fini();

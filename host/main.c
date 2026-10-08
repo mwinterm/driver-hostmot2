@@ -312,7 +312,14 @@ static size_t bound_output_count;
  * after the driver's own, under names no HAL pin has. In SI, as everything on
  * the channel is: seconds, and a count.
  */
-enum { HOST_READ_TIME, HOST_ANSWER_TIME, HOST_ANSWERS_LATE, HOST_SSERIAL_FAULTS, HOST_SIGNALS };
+enum {
+    HOST_READ_TIME,
+    HOST_ANSWER_TIME,
+    HOST_ANSWERS_LATE,
+    HOST_SSERIAL_FAULTS,
+    HOST_SSERIAL_WAITS,
+    HOST_SIGNALS
+};
 static const struct {
     const char *name;
     uint32_t type;
@@ -322,6 +329,7 @@ static const struct {
     {"hm2-host.answer-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
     {"hm2-host.answers-late", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
     {"hm2-host.sserial-faults", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
+    {"hm2-host.sserial-waits", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
 };
 
 /* The pins `pin.` lines fixed, so binding publishes them for reading only. */
@@ -1243,6 +1251,24 @@ int main(int argc, char **argv) {
                 sserial_watched());
     }
     uint64_t sserial_faults = 0;
+    /*
+     * The transfer guard: a read that would come less than
+     * `sserial_transfer_us` after the write that started a Smart Serial
+     * transfer waits until it has had that long. Under memory load on a Pi
+     * 4 every part of the period slows at once -- the read, the core's
+     * answer, the write -- and the write ended tens of microseconds before
+     * the next read, which found the transfer unfinished: a fault, and one
+     * of twenty that stop the port. Waiting costs that period's start
+     * instead, which the core's timebase takes as a late release.
+     */
+    const double transfer_s = sserial_watched() > 0 ? config.sserial_transfer_us * 1e-6 : 0.0;
+    uint64_t sserial_waits = 0;
+    if (transfer_s > 0.0) {
+        hm2_log(HM2_LOG_INFO,
+                "a Smart Serial transfer is given %u us between a write and the next read: a "
+                "read that would come sooner waits, counted in hm2-host.sserial-waits",
+                config.sserial_transfer_us);
+    }
     /* When the last write ended, and whether its answer came in time: what
        the next read's Smart Serial transfer had to work with. */
     struct timespec written_at = {0};
@@ -1282,6 +1308,29 @@ int main(int argc, char **argv) {
             break;
         }
 
+        /* When the period began, before any wait for a transfer. */
+        struct timespec woke;
+        clock_gettime(CLOCK_MONOTONIC, &woke);
+        if (transfer_s > 0.0 && written_at.tv_sec) {
+            double wait_s = sserial_transfer_wait(seconds_between(&written_at, &woke), transfer_s);
+            if (wait_s > 0.0) {
+                struct timespec until = woke;
+                add_ns(&until, (long long)(wait_s * 1e9));
+                sleep_until(&until);
+                sserial_waits++;
+                if (sserial_waits <= 100 || sserial_waits % 100 == 0) {
+                    hm2_log(HM2_LOG_WARN,
+                            "Smart Serial: the read waited %.0f us, wait %llu, so the transfer "
+                            "the last write started had %u us. The period before woke %.0f us "
+                            "late, its read took %.0f us and its write %.0f us%s",
+                            wait_s * 1e6, (unsigned long long)sserial_waits,
+                            config.sserial_transfer_us, now_period.wake_late_s * 1e6,
+                            now_period.read_s * 1e6, now_period.write_s * 1e6,
+                            sserial_waits == 100 ? "; from here every 100th is logged" : "");
+                }
+            }
+        }
+
         /*
          * Not same cycle, the shape before ADR 0046: the core's answer to the
          * *previous* publish goes into the pins first, and read and write
@@ -1302,7 +1351,7 @@ int main(int argc, char **argv) {
         struct timespec read_end;
         clock_gettime(CLOCK_MONOTONIC, &read_start);
         before = now_period;
-        now_period = (hm2_period){.wake_late_s = seconds_between(&next, &read_start)};
+        now_period = (hm2_period){.wake_late_s = seconds_between(&next, &woke)};
         gap_s = written_at.tv_sec ? seconds_between(&written_at, &read_start) : 0.0;
         read->funct(read->arg, (long)period_ns);
         clock_gettime(CLOCK_MONOTONIC, &read_end);
@@ -1398,6 +1447,7 @@ int main(int argc, char **argv) {
                 values[bound_input_count + HOST_ANSWER_TIME] = answer_s;
                 values[bound_input_count + HOST_ANSWERS_LATE] = (double)answers_late;
                 values[bound_input_count + HOST_SSERIAL_FAULTS] = (double)sserial_faults;
+                values[bound_input_count + HOST_SSERIAL_WAITS] = (double)sserial_waits;
             }
             hm2_region_set_bus(&region, cycle, bus_state, bus_fault);
             clock_gettime(CLOCK_MONOTONIC, &published_at);
@@ -1476,8 +1526,9 @@ int main(int argc, char **argv) {
             (unsigned long long)stale);
     hm2_log(HM2_LOG_INFO, "the read took %.0f us at worst", read_max_s * 1e6);
     if (sserial_watched() > 0) {
-        hm2_log(sserial_faults ? HM2_LOG_WARN : HM2_LOG_INFO, "Smart Serial: %llu fault(s)",
-                (unsigned long long)sserial_faults);
+        hm2_log(sserial_faults ? HM2_LOG_WARN : HM2_LOG_INFO,
+                "Smart Serial: %llu fault(s); %llu read(s) waited for a transfer",
+                (unsigned long long)sserial_faults, (unsigned long long)sserial_waits);
     }
     if (config.same_cycle) {
         hm2_log(HM2_LOG_INFO,

@@ -116,7 +116,7 @@ jobs:
           # beside the driver's pins, in seconds.
           grep -q 'same cycle: each period reads, publishes, waits' /tmp/host.log \
             || { echo "the host did not take the same-cycle shape by default" >&2; exit 1; }
-          for name in read-time answer-time answers-late sserial-faults; do
+          for name in read-time answer-time answers-late sserial-faults sserial-waits; do
             grep -qE "signal +[0-9]+ in .* hm2-host\.$name$" /tmp/host.log \
               || { echo "hm2-host.$name was not published" >&2; exit 1; }
           done
@@ -141,6 +141,14 @@ jobs:
           timeout 4 ./build/hm2-host /tmp/stated.conf build > /tmp/stated.log 2>&1 || true
           grep -q 'worst cycle: 600 us declared, as the file says' /tmp/stated.log \
             || { cat /tmp/stated.log; echo "a stated worst cycle was not declared" >&2; exit 1; }
+          # A Smart Serial transfer guard as long as the cycle would make every
+          # read wait, and is refused.
+          { cat examples/test-board.conf; echo 'sserial_transfer_us = 1000'; } > /tmp/guard.conf
+          if ./build/hm2-host /tmp/guard.conf build > /tmp/guard.log 2>&1; then
+            echo "a transfer guard as long as the cycle was accepted" >&2; exit 1
+          fi
+          grep -q 'sserial_transfer_us is 1000' /tmp/guard.log \
+            || { cat /tmp/guard.log; echo "the guard was not refused by name" >&2; exit 1; }
 
       # A `pin.` line fixes a pin the driver only reads, and publishes it for
       # reading only (channel 2.2.0, the control's ADR 0045 §2). Everything
