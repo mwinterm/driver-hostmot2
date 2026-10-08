@@ -34,6 +34,7 @@ typedef struct {
     const char *name;
     hm2_shim_type type;
     void *cell;
+    int writable;
 } declared_param;
 
 static declared_param *declared;
@@ -66,7 +67,7 @@ int hm2_shim_param_lookup(const char *name, double *out) {
     return 0;
 }
 
-void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell) {
+void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell, int writable) {
     if (declared_count == declared_capacity) {
         size_t grown = declared_capacity ? declared_capacity * 2 : 256;
         declared_param *bigger = realloc(declared, grown * sizeof(*bigger));
@@ -79,10 +80,27 @@ void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell) {
     declared[declared_count].name = name;
     declared[declared_count].type = type;
     declared[declared_count].cell = cell;
+    declared[declared_count].writable = writable;
     declared_count++;
 }
 
 size_t hm2_shim_declared_param_count(void) { return declared_count; }
+
+size_t hm2_shim_param_count(void) { return declared_count; }
+
+int hm2_shim_param_view(size_t index, hm2_shim_signal *out, int *writable) {
+    if (index >= declared_count || !out) {
+        return 0;
+    }
+    out->name = declared[index].name;
+    out->type = declared[index].type;
+    out->dir = HM2_SHIM_TO_CORE;
+    out->cell = declared[index].cell;
+    if (writable) {
+        *writable = declared[index].writable;
+    }
+    return 1;
+}
 
 int hm2_shim_param_ending(const char *suffix, hm2_shim_signal *out) {
     if (!suffix || !out) {

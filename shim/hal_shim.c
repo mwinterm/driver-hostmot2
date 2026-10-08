@@ -356,7 +356,6 @@ DEFINE_PIN(real, rtapi_real, hal_real_t, r, HM2_SHIM_REAL)
  */
 static int new_param(hal_pdir_t dir, void **ref, hm2_shim_type type, hm2_cell initial,
                      const char *fmt, va_list args) {
-    (void)dir;
     if (!ref) {
         return -EINVAL;
     }
@@ -381,7 +380,8 @@ static int new_param(hal_pdir_t dir, void **ref, hm2_shim_type type, hm2_cell in
         hm2_shim_log(RTAPI_MSG_INFO, "shim: parameter %s = %g, from the host configuration",
                      name, configured);
     }
-    hm2_shim_note_param(name, type, cell);
+    /* HAL_RW is both bits; a read-only parameter is HAL_RO alone. */
+    hm2_shim_note_param(name, type, cell, (dir & HAL_WO) == HAL_WO);
     *ref = cell;
     return 0;
 }

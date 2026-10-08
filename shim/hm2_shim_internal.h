@@ -21,8 +21,9 @@ void hm2_shim_log(int level, const char *fmt, ...) __attribute__((format(printf,
  */
 int hm2_shim_param_lookup(const char *name, double *out);
 
-/* Records a declared parameter, so the host can report the ones nobody set. */
-void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell);
+/* Records a declared parameter, so the host can report the ones nobody set
+   and publish each one, writable where the driver declared it HAL_RW. */
+void hm2_shim_note_param(const char *name, hm2_shim_type type, void *cell, int writable);
 
 /* Every parameter the driver declared, for the start-up report. */
 size_t hm2_shim_declared_param_count(void);

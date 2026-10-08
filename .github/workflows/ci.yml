@@ -79,6 +79,17 @@ jobs:
           grep -qE 'signal +[0-9]+ out .* value +0 +hm2_test\.0\.gpio\.000\.out$' /tmp/host.log \
             || { echo "the value index is not dense within its direction" >&2; exit 1; }
 
+          # Every parameter is published after the pins, read back as an
+          # input and, where the driver declared it writable, written as an
+          # output applied on change (the control's ADR 0053): io_error, the
+          # one the control clears after a dead link, among them.
+          grep -qE 'parameter\(s\) published, [0-9]+ of them writable' /tmp/host.log \
+            || { echo "the parameters were not published" >&2; exit 1; }
+          grep -qE 'signal +[0-9]+ in +bool .* hm2_test\.0\.io_error$' /tmp/host.log \
+            || { echo "io_error is not read back" >&2; exit 1; }
+          grep -qE 'signal +[0-9]+ out +bool .* on-change hm2_test\.0\.io_error$' /tmp/host.log \
+            || { echo "io_error cannot be written on change" >&2; exit 1; }
+
           # With no control attached it keeps cycling and does not let the
           # FPGA watchdog bite: until a control has answered, every output is
           # still the value this process seeded it with, so there is nothing a

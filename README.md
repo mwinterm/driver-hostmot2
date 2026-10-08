@@ -61,6 +61,16 @@ control can write it and a machine description that tries is told why. A pin
 nobody declared, one the driver writes, a both-ways pin and a value that does
 not fit the pin's type are each refused by name, with the line.
 
+**Every parameter is published too** (the control's ADR 0053), after the
+pins: read back as an input, so the control sees what the driver runs on --
+`halcmd show param` -- and, where the driver declared it writable, written as
+an output applied only when the control's value changes -- `halcmd setp`.
+Its starting value is the `param.` line's, or the driver's default, so
+nothing changes until the control asks; when it may ask is the control's to
+decide. That includes `io_error`: cleared by the control after the link
+died, it lets the transport try the board again, and this process stops
+reporting the bus as faulted unless the board still does not answer.
+
 Two more things the process says without being asked (channel 2.2.0, ADR
 0045):
 
