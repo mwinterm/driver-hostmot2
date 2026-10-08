@@ -81,7 +81,10 @@ Two more things the process says without being asked (channel 2.2.0, ADR
   the driver's: the card lowers `index-enable` at the index and it stays
   lowered, a bite raises `has_bit` and it stays raised until the control
   lowers it. Written every cycle, the control's held zero used to undo a
-  watchdog bite the cycle after it happened.
+  watchdog bite the cycle after it happened. The encoder's `probe-enable`
+  goes the same way although upstream declares it `HAL_IN`: the driver
+  clears it when the probe latches, as it clears `index-enable` at an index
+  (the control's ADR 0052 §2). `make check` shows it, with no board.
 - Whether the board answers, in the channel's `bus_state` and `bus_fault`
   every cycle. When the transport sets `io_error` -- too many late or lost
   replies, after which it reads and writes nothing -- the bus is `FAULT`
@@ -105,6 +108,19 @@ The process says how that goes, as inputs beside the driver's pins, in SI:
 [s] (from the last publish to the control's answer) and
 `hm2-host.answers-late` (a count). A recorder on the control's side
 (LeafSCOPE) records them like any pin; the worst of each is logged at stop.
+
+**Every Smart Serial fault is counted**, in `hm2-host.sserial-faults`, and
+logged with its cycle, how long before that period's read the previous write
+had ended -- the time the port's transfer had -- and whether that write
+waited for an answer that did not come in time. The driver itself says
+"DoIt not cleared from previous servo thread" once, at a port's fourth
+fault, and its `fault-count` pin decays to zero within cycles, so neither
+says how often a port faults. A fault costs the port that period's update
+(its outputs, an analog command among them, keep last period's values); a
+port faulting about twenty times in quick succession is stopped for good.
+A port that has just been started may fault a few times while it comes up --
+the driver lets four pass before it says anything -- and those are counted
+too.
 
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the

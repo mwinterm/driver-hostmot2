@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "cnc_outboard.h"
+#include "hm2_shim.h"
 
 /* ---------------------------------------------------------------------------
  * Diagnostics
@@ -26,6 +27,23 @@ enum {
 
 void hm2_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void hm2_log_set_level(int level);
+
+/* ---------------------------------------------------------------------------
+ * Smart Serial faults (sserial_watch.c)
+ * ------------------------------------------------------------------------- */
+
+/* The port's number in a pin named `....sserial.port-N.fault-count`, or -1. */
+int sserial_port_of(const char *name);
+/* Watches `signal` if it is a port's fault count. Returns whether it is. */
+int sserial_watch_add(const hm2_shim_signal *signal);
+size_t sserial_watched(void);
+/*
+ * After a write: how many watched ports' fault counts rose since the last
+ * call, each logged with the cycle, how long before this period's read the
+ * previous write had ended, whether that write waited for a core that did not
+ * answer in time, and `so_far` the faults before these.
+ */
+uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, int gap_late, uint64_t so_far);
 
 /* ---------------------------------------------------------------------------
  * The region
