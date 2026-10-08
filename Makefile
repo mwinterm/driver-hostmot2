@@ -68,7 +68,7 @@ TEST_OBJ := $(addprefix $(BUILD)/test/,$(TEST_SRC:.c=.o))
 SHIM_OBJ := $(addprefix $(BUILD)/shim/,$(SHIM_SRC:.c=.o))
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o))
 
-.PHONY: all clean
+.PHONY: all check clean
 all: $(BUILD)/hm2-host $(BUILD)/libhostmot2.so $(BUILD)/libhm2_eth.so \
      $(BUILD)/libhm2_test.so
 
@@ -114,6 +114,14 @@ $(BUILD)/shim/%.o: $(SHIM)/%.c
 $(BUILD)/host/%.o: $(HOST)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -c -o $@ $<
+
+# What can be checked without a board, run by `make check` and by CI.
+$(BUILD)/shim-pins: test/shim_pins.c $(BUILD)/libhm2shim.so
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ $< -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
+
+check: $(BUILD)/shim-pins
+	$(BUILD)/shim-pins
 
 clean:
 	rm -rf $(BUILD)

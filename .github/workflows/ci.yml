@@ -29,6 +29,13 @@ jobs:
       - name: the driver builds unmodified against the shim
         run: make -j"$(nproc)"
 
+      # How the shim publishes a pin, which no fake board shows: the fake
+      # boards have no encoder. A pin the driver writes back -- HAL_IO, and
+      # the encoder's probe-enable, which upstream declares HAL_IN and clears
+      # when the probe latches -- goes across the channel both ways.
+      - name: a pin the driver writes back is published both ways
+        run: make check
+
       - name: nothing is left undefined
         run: |
           for so in build/libhostmot2.so build/libhm2_eth.so build/libhm2shim.so \

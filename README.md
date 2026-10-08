@@ -71,7 +71,10 @@ Two more things the process says without being asked (channel 2.2.0, ADR
   the driver's: the card lowers `index-enable` at the index and it stays
   lowered, a bite raises `has_bit` and it stays raised until the control
   lowers it. Written every cycle, the control's held zero used to undo a
-  watchdog bite the cycle after it happened.
+  watchdog bite the cycle after it happened. The encoder's `probe-enable`
+  goes the same way although upstream declares it `HAL_IN`: the driver
+  clears it when the probe latches, as it clears `index-enable` at an index
+  (the control's ADR 0052 §2). `make check` shows it, with no board.
 - Whether the board answers, in the channel's `bus_state` and `bus_fault`
   every cycle. When the transport sets `io_error` -- too many late or lost
   replies, after which it reads and writes nothing -- the bus is `FAULT`
