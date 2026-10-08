@@ -428,11 +428,79 @@ static int fix_pins(const hm2_config *config, const char *config_path) {
     return failures ? -1 : 0;
 }
 
+/*
+ * The driver's parameters as the channel carries them (the control's ADR
+ * 0053): one view per direction a parameter crosses in, so a bound signal
+ * points at a view as it points at a pin. Allocated once, at binding.
+ */
+static hm2_shim_signal *param_views;
+static size_t param_view_count;
+static size_t params_published;
+static size_t params_writable;
+
+/* Whether a pin already crosses the channel under `name` in `dir`: the
+   channel allows one name per direction, and the pin keeps it. */
+static int pin_named(const char *name, hm2_shim_dir dir) {
+    size_t count = hm2_shim_signal_count();
+    for (size_t i = 0; i < count; i++) {
+        const hm2_shim_signal *pin = hm2_shim_signal_at(i);
+        if (pin->dir == dir && strcmp(pin->name, name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Every parameter, after the pins (the control's ADR 0053): read back as an
+ * input, so the control sees what the driver runs on; and a parameter the
+ * driver declared HAL_RW written as an output as well, applied only when the
+ * control's value changes -- `halcmd setp` across the channel. Its starting
+ * value is the one the configuration set, so nothing changes until the
+ * control asks. Whether a change is allowed at that moment is the control's
+ * to decide; this process applies what it is sent.
+ */
+static void bind_params(void) {
+    size_t count = hm2_shim_param_count();
+    for (size_t k = 0; k < count; k++) {
+        hm2_shim_signal view;
+        int writable = 0;
+        if (!hm2_shim_param_view(k, &view, &writable)) {
+            continue;
+        }
+        if (pin_named(view.name, HM2_SHIM_TO_CORE)) {
+            hm2_log(HM2_LOG_WARN, "parameter %s has a pin's name; the pin is published "
+                                  "under it and the parameter is not", view.name);
+            continue;
+        }
+        hm2_shim_signal *in = &param_views[param_view_count++];
+        *in = view;
+        in->dir = HM2_SHIM_TO_CORE;
+        bound_inputs[bound_input_count].signal = in;
+        bound_inputs[bound_input_count].value_index = bound_input_count;
+        bound_inputs[bound_input_count].flags = 0u;
+        bound_input_count++;
+        params_published++;
+        if (writable && !pin_named(view.name, HM2_SHIM_FROM_CORE)) {
+            hm2_shim_signal *out = &param_views[param_view_count++];
+            *out = view;
+            out->dir = HM2_SHIM_FROM_CORE;
+            bound_outputs[bound_output_count].signal = out;
+            bound_outputs[bound_output_count].value_index = bound_output_count;
+            bound_outputs[bound_output_count].flags = CNC_OUTBOARD_SIGNAL_ON_CHANGE;
+            bound_output_count++;
+            params_writable++;
+        }
+    }
+}
+
 static int bind_signals(void) {
     size_t count = hm2_shim_signal_count();
-    bound_inputs = calloc(count ? count : 1, sizeof(*bound_inputs));
-    bound_outputs = calloc(count ? count : 1, sizeof(*bound_outputs));
-    if (!bound_inputs || !bound_outputs) {
+    size_t params = hm2_shim_param_count();
+    bound_inputs = calloc(count + params + 1, sizeof(*bound_inputs));
+    bound_outputs = calloc(count + params + 1, sizeof(*bound_outputs));
+    param_views = calloc(2 * params + 1, sizeof(*param_views));
+    if (!bound_inputs || !bound_outputs || !param_views) {
         return -1;
     }
     for (size_t i = 0; i < count; i++) {
@@ -455,6 +523,10 @@ static int bind_signals(void) {
             bound_output_count++;
         }
     }
+    bind_params();
+    hm2_log(HM2_LOG_INFO, "%zu parameter(s) published, %zu of them writable at run time "
+                          "(ADR 0053)",
+            params_published, params_writable);
     return 0;
 }
 
@@ -955,8 +1027,14 @@ int main(int argc, char **argv) {
                     "the link to the board is dead: the driver set io_error and reads and "
                     "writes nothing more, so every input from here on is stale and the "
                     "board's own watchdog has stopped its outputs. The core faults every axis "
-                    "behind this process; restarting the control is the recovery (ADR 0045 "
-                    "§3)");
+                    "behind this process; once the cause is fixed the control may clear "
+                    "io_error, or be restarted (ADR 0045 §3, ADR 0053)");
+        } else if (link_dead && has_io_error && hm2_shim_cell_get(&io_error) == 0.0) {
+            /* The control cleared io_error (ADR 0053): the transport tries the
+               board again, and sets it again if the board still does not
+               answer. */
+            link_dead = 0;
+            hm2_log(HM2_LOG_WARN, "io_error was cleared: talking to the board again");
         }
         int bit_now = has_bit && hm2_shim_cell_get(has_bit) != 0.0;
         if (bit_now != bitten) {
@@ -1116,6 +1194,7 @@ int main(int argc, char **argv) {
     hm2_region_destroy(&region);
     free(bound_inputs);
     free(bound_outputs);
+    free(param_views);
     free(fixed_pins);
     hm2_shim_fini();
     hm2_config_free(&config);

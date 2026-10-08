@@ -232,6 +232,15 @@ size_t hm2_shim_unclaimed_params(const char **into, size_t capacity);
 int hm2_shim_param_ending(const char *suffix, hm2_shim_signal *out);
 
 /*
+ * Every parameter the driver declared, as a signal view, and whether it may
+ * be written: what `halcmd show param` lists, and what `setp` may change
+ * (the control's ADR 0053). The view's direction is toward the core; the
+ * host decides how each crosses the channel.
+ */
+size_t hm2_shim_param_count(void);
+int hm2_shim_param_view(size_t index, hm2_shim_signal *out, int *writable);
+
+/*
  * The host is about to run its cycle. From here on `rtapi_task_self` answers
  * 0, as it does inside a LinuxCNC servo thread, and before it -1, as it does
  * in `rtapi_app_main`; the transport sends immediately outside a task and
