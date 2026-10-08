@@ -99,6 +99,19 @@ The process says how that goes, as inputs beside the driver's pins, in SI:
 `hm2-host.answers-late` (a count). A recorder on the control's side
 (LeafSCOPE) records them like any pin; the worst of each is logged at stop.
 
+**Every Smart Serial fault is counted**, in `hm2-host.sserial-faults`, and
+logged with its cycle, how long before that period's read the previous write
+had ended -- the time the port's transfer had -- and whether that write
+waited for an answer that did not come in time. The driver itself says
+"DoIt not cleared from previous servo thread" once, at a port's fourth
+fault, and its `fault-count` pin decays to zero within cycles, so neither
+says how often a port faults. A fault costs the port that period's update
+(its outputs, an analog command among them, keep last period's values); a
+port faulting about twenty times in quick succession is stopped for good.
+A port that has just been started may fault a few times while it comes up --
+the driver lets four pass before it says anything -- and those are counted
+too.
+
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the
 other side of the channel. Two files that both described the machine would be

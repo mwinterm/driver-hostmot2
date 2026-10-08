@@ -60,7 +60,7 @@ ETH_SRC := hm2_eth.c hm2_eth_net_posix.c
 TEST_SRC := hm2_test.c
 
 SHIM_SRC := hal_shim.c rtapi_shim.c param_table.c
-HOST_SRC := main.c config.c region.c
+HOST_SRC := main.c config.c region.c sserial_watch.c
 
 HM2_OBJ  := $(addprefix $(BUILD)/hm2/,$(HM2_SRC:.c=.o))
 ETH_OBJ  := $(addprefix $(BUILD)/eth/,$(ETH_SRC:.c=.o))
@@ -120,8 +120,14 @@ $(BUILD)/shim-pins: test/shim_pins.c $(BUILD)/libhm2shim.so
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ $< -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
 
-check: $(BUILD)/shim-pins
+$(BUILD)/sserial-watch: test/sserial_watch.c host/sserial_watch.c $(BUILD)/libhm2shim.so
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ test/sserial_watch.c host/sserial_watch.c \
+		-L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
+
+check: $(BUILD)/shim-pins $(BUILD)/sserial-watch
 	$(BUILD)/shim-pins
+	$(BUILD)/sserial-watch
 
 clean:
 	rm -rf $(BUILD)
