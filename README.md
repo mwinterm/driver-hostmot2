@@ -111,11 +111,16 @@ The process says how that goes, as inputs beside the driver's pins, in SI:
 
 **The worst cycle is measured, not guessed.** The channel header carries
 what a cycle of this process costs at worst, and the control refuses a
-machine whose cycle that does not fit. Before the region exists -- so no
-control can read the figure before it is made -- the process reads and
-writes the card for `measure_cycles` periods (1000, a second at 1 ms) at
-the cycle's own period and priority, and declares the worst read plus write
-after the first tenth, times `worst_case_margin` (1.5). On the fake board,
+machine whose cycle that does not fit. The region is made under a name no
+control looks for (`<region>.measuring`), and right before the cycle the
+process reads and writes the card for `measure_cycles` periods (1000, a
+second at 1 ms) at the cycle's own period and priority; it declares the
+worst read plus write after the first tenth, times `worst_case_margin`
+(1.5), and only then gives the region its name, so no control reads the
+figure before it is made. The measurement's first write arms the card's
+watchdog, so it comes after everything slow and the cycle follows it at
+once: the first cycle's write is logged with how long after the last
+measured one it came, beside the watchdog's timeout. On the fake board,
 where a read is a memory copy rather than a UDP round trip to a card:
 
 ```

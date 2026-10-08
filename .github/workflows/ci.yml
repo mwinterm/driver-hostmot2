@@ -130,6 +130,11 @@ jobs:
           created=$(grep -n 'region /cnc-hm2-test:' /tmp/host.log | head -1 | cut -d: -f1)
           [ "$measured" -lt "$created" ] \
             || { echo "the region existed before its worst cycle was measured" >&2; exit 1; }
+          # The measurement arms the card's watchdog with its first write, so
+          # the cycle has to follow it within the watchdog's timeout.
+          grep -qE "the cycle's first write came [0-9.]+ ms after the measurement's last" \
+            /tmp/host.log \
+            || { echo "the first write after the measurement was not said" >&2; exit 1; }
           # And a figure in the file is declared as it is.
           { cat examples/test-board.conf; echo 'worst_case_cycle_ns = 600000'; } \
             > /tmp/stated.conf

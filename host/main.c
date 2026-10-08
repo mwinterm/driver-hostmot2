@@ -726,10 +726,11 @@ static void add_ns(struct timespec *when, long long ns) {
  * The worst cycle this process declares in the channel header, where the
  * core's start-up check reads it (§10.2): measured rather than guessed.
  *
- * Before the region exists, so no core can attach and read the figure while
- * it is still being made, the card is read and written for `measure_cycles`
- * periods at the cycle's own period and priority -- what happens before a
- * core attaches anyway: the driver's own values out, the watchdog petted,
+ * Before the region has its name, so no core can attach and read the figure
+ * while it is still being made, and right before the cycle, the card is read
+ * and written for `measure_cycles` periods at the cycle's own period and
+ * priority -- what happens before a core attaches anyway: the driver's own
+ * values out, the watchdog armed by the first write and petted from then on,
  * read then write as the cycle without one does, which leaves a Smart Serial
  * transfer the rest of the period. The first tenth is not counted: the first
  * packets and transactions and a cold cache are the start, not a cycle.
@@ -738,7 +739,7 @@ static void add_ns(struct timespec *when, long long ns) {
  * measurement is logged beside it.
  */
 static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_funct *read,
-                                    const hm2_shim_funct *write) {
+                                    const hm2_shim_funct *write, struct timespec *last_write) {
     const long long period_ns = (long long)config->cycle_us * 1000LL;
     const uint32_t skipped = config->measure_cycles / 10u;
     double worst_s = 0.0;
@@ -758,6 +759,7 @@ static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_fun
         clock_gettime(CLOCK_MONOTONIC, &between);
         write->funct(write->arg, (long)period_ns);
         clock_gettime(CLOCK_MONOTONIC, &end);
+        *last_write = end;
         if (i < skipped) {
             continue;
         }
@@ -797,6 +799,39 @@ static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_fun
                 (double)declared / 1e3, config->cycle_us);
     }
     return declared;
+}
+
+/*
+ * The cycle's first write against the measurement's last: the card's watchdog
+ * is armed and counting between them, so the gap is said beside its timeout
+ * once, and warned of where it takes half of it.
+ */
+static void first_write_after_measuring(const struct timespec *measured,
+                                        const struct timespec *written) {
+    if (!measured->tv_sec) {
+        return;
+    }
+    double gap_s = seconds_between(measured, written);
+    hm2_shim_signal timeout = {0};
+    double timeout_s = hm2_shim_param_ending(".watchdog.timeout_ns", &timeout)
+                           ? hm2_shim_cell_get(&timeout) * 1e-9
+                           : 0.0;
+    if (timeout_s > 0.0 && gap_s * 2.0 > timeout_s) {
+        hm2_log(HM2_LOG_WARN,
+                "the cycle's first write came %.1f ms after the measurement's last, more than "
+                "half the card's %.1f ms watchdog",
+                gap_s * 1e3, timeout_s * 1e3);
+    } else if (timeout_s > 0.0) {
+        hm2_log(HM2_LOG_INFO,
+                "the cycle's first write came %.1f ms after the measurement's last, within "
+                "the card's %.1f ms watchdog",
+                gap_s * 1e3, timeout_s * 1e3);
+    } else {
+        hm2_log(HM2_LOG_INFO,
+                "the cycle's first write came %.1f ms after the measurement's last; the board "
+                "has no watchdog",
+                gap_s * 1e3);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1086,15 +1121,21 @@ int main(int argc, char **argv) {
         goto fail;
     }
 
-    /* At the cycle's priority from here on, the measurement included. */
-    ask_for_realtime(&config);
-    uint64_t worst_case_cycle_ns = declare_worst_cycle(&config, read, write);
-    if (stopping) {
-        goto fail;
-    }
-
+    /*
+     * The region is made under a name no core attaches to and named only once
+     * it is finished, its worst cycle measured (declare_worst_cycle). The
+     * measurement's first write is the driver's first, which arms the card's
+     * watchdog, so from it to the cycle's first write nothing may take as
+     * long as the watchdog's timeout: everything slow -- the region, the
+     * signal table and its log -- comes before it, and the log goes through
+     * the ring from the measurement on. Made the other way round, the setup
+     * after the measurement let a WF41C's watchdog bite, and its Smart
+     * Serial remotes lost contact and both ports were stopped.
+     */
+    char measuring[sizeof(config.region) + 16];
+    snprintf(measuring, sizeof(measuring), "%s.measuring", config.region);
     hm2_region region;
-    if (hm2_region_create(&region, config.region, bound_input_count + HOST_SIGNALS,
+    if (hm2_region_create(&region, measuring, bound_input_count + HOST_SIGNALS,
                           bound_output_count) != 0) {
         goto fail;
     }
@@ -1105,7 +1146,7 @@ int main(int argc, char **argv) {
         .response_watchdog_cycles = config.response_watchdog_cycles,
         .drive_watchdog_us = config.drive_watchdog_us,
         .spin_iterations = config.spin_iterations,
-        .worst_case_cycle_ns = worst_case_cycle_ns,
+        .worst_case_cycle_ns = 0,
         .flags = config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u,
     };
     hm2_region_describe(&region, &header);
@@ -1124,6 +1165,16 @@ int main(int argc, char **argv) {
         bound_outputs[i].last = hm2_shim_cell_get(bound_outputs[i].signal);
         hm2_region_seed_output(&region, bound_outputs[i].value_index, bound_outputs[i].last);
     }
+
+    /* At the cycle's priority from here on, the measurement included. */
+    ask_for_realtime(&config);
+    log_to_ring();
+    struct timespec measured_write = {0};
+    hm2_region_declare_worst(&region, declare_worst_cycle(&config, read, write, &measured_write));
+    if (stopping || hm2_region_rename(&region, config.region) != 0) {
+        hm2_region_destroy(&region);
+        goto fail;
+    }
     hm2_region_set_state(&region, CNC_OUTBOARD_STATE_RUNNING);
 
     hm2_log(HM2_LOG_INFO,
@@ -1133,7 +1184,6 @@ int main(int argc, char **argv) {
             (unsigned long long)region.shm->config.generation);
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
-    log_to_ring();
     hm2_shim_enter_cycle();
 
     const long long period_ns = (long long)config.cycle_us * 1000LL;
@@ -1265,6 +1315,8 @@ int main(int argc, char **argv) {
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
             now_period.write_s = seconds_between(&read_end, &written_at);
+            first_write_after_measuring(&measured_write, &written_at);
+            measured_write.tv_sec = 0;
             sserial_faults += sserial_faults_seen(published + 1, gap_s, &before,
                                                   now_period.wake_late_s, sserial_faults);
         }
@@ -1395,6 +1447,8 @@ int main(int argc, char **argv) {
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
             now_period.write_s = seconds_between(&answered_at, &written_at);
+            first_write_after_measuring(&measured_write, &written_at);
+            measured_write.tv_sec = 0;
             sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, &before,
                                                   now_period.wake_late_s, sserial_faults);
         }

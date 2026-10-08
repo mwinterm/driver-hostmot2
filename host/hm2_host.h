@@ -97,6 +97,15 @@ typedef struct {
 size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out);
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs);
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config);
+/*
+ * The region under another name, in one step: a region made under a name no
+ * core looks for, finished, then given the name a core attaches to, so no
+ * core ever attaches to it half made. Linux keeps POSIX shared memory as
+ * files under /dev/shm, and a rename there is atomic.
+ */
+int hm2_region_rename(hm2_region *region, const char *name);
+/* The worst cycle the header declares, set before the region is named. */
+void hm2_region_declare_worst(hm2_region *region, uint64_t worst_case_cycle_ns);
 void hm2_region_declare(hm2_region *region, size_t index, const char *name, uint32_t direction,
                         uint32_t type, uint32_t role, uint32_t unit, uint32_t value_index,
                         uint32_t flags);

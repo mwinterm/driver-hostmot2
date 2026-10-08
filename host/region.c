@@ -370,6 +370,28 @@ uint32_t hm2_region_state(hm2_region *region) {
     return atomic_load_explicit((_Atomic uint32_t *)&shm->state, memory_order_acquire);
 }
 
+static void shm_path(char *path, size_t size, const char *name) {
+    snprintf(path, size, "/dev/shm%s%s", name[0] == '/' ? "" : "/", name);
+}
+
+int hm2_region_rename(hm2_region *region, const char *name) {
+    char from[300];
+    char to[300];
+    shm_path(from, sizeof(from), region->name);
+    shm_path(to, sizeof(to), name);
+    if (rename(from, to) != 0) {
+        hm2_log(HM2_LOG_ERROR, "could not name the shared region %s: renaming %s failed: %s",
+                name, from, strerror(errno));
+        return -1;
+    }
+    snprintf(region->name, sizeof(region->name), "%s", name);
+    return 0;
+}
+
+void hm2_region_declare_worst(hm2_region *region, uint64_t worst_case_cycle_ns) {
+    region->shm->config.worst_case_cycle_ns = worst_case_cycle_ns;
+}
+
 void hm2_region_destroy(hm2_region *region) {
     if (!region->base) {
         return;
