@@ -29,6 +29,12 @@ jobs:
       - name: the driver builds unmodified against the shim
         run: make -j"$(nproc)"
 
+      # What no fake board shows: the fake boards have no Smart Serial port.
+      # Each rise of a port's fault count is one fault, counted and logged;
+      # the driver's decay of it is none.
+      - name: every Smart Serial fault is counted
+        run: make check
+
       - name: nothing is left undefined
         run: |
           for so in build/libhostmot2.so build/libhm2_eth.so build/libhm2shim.so \
@@ -96,7 +102,7 @@ jobs:
           # beside the driver's pins, in seconds.
           grep -q 'same cycle: each period reads, publishes, waits' /tmp/host.log \
             || { echo "the host did not take the same-cycle shape by default" >&2; exit 1; }
-          for name in read-time answer-time answers-late; do
+          for name in read-time answer-time answers-late sserial-faults; do
             grep -qE "signal +[0-9]+ in .* hm2-host\.$name$" /tmp/host.log \
               || { echo "hm2-host.$name was not published" >&2; exit 1; }
           done

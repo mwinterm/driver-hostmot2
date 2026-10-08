@@ -311,7 +311,7 @@ static size_t bound_output_count;
  * after the driver's own, under names no HAL pin has. In SI, as everything on
  * the channel is: seconds, and a count.
  */
-enum { HOST_READ_TIME, HOST_ANSWER_TIME, HOST_ANSWERS_LATE, HOST_SIGNALS };
+enum { HOST_READ_TIME, HOST_ANSWER_TIME, HOST_ANSWERS_LATE, HOST_SSERIAL_FAULTS, HOST_SIGNALS };
 static const struct {
     const char *name;
     uint32_t type;
@@ -320,6 +320,7 @@ static const struct {
     {"hm2-host.read-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
     {"hm2-host.answer-time", CNC_OUTBOARD_SIGNAL_F64, CNC_OUTBOARD_UNIT_SECOND},
     {"hm2-host.answers-late", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
+    {"hm2-host.sserial-faults", CNC_OUTBOARD_SIGNAL_I32, CNC_OUTBOARD_UNIT_COUNT},
 };
 
 /* The pins `pin.` lines fixed, so binding publishes them for reading only. */
@@ -868,6 +869,20 @@ int main(int argc, char **argv) {
         hm2_log(HM2_LOG_WARN, "the driver declared no io_error parameter, so a dead link to "
                               "the board cannot be told to the core");
     }
+    for (size_t i = 0; i < bound_input_count; i++) {
+        sserial_watch_add(bound_inputs[i].signal);
+    }
+    if (sserial_watched() > 0) {
+        hm2_log(HM2_LOG_INFO, "watching %zu Smart Serial port(s) for faults: each is counted in "
+                              "hm2-host.sserial-faults and logged",
+                sserial_watched());
+    }
+    uint64_t sserial_faults = 0;
+    /* When the last write ended, and whether its answer came in time: what
+       the next read's Smart Serial transfer had to work with. */
+    struct timespec written_at = {0};
+    int written_late = 0;
+    double gap_s = 0.0;
     int link_dead = 0;
     int bitten = 0;
 
@@ -919,6 +934,8 @@ int main(int argc, char **argv) {
         struct timespec read_start;
         struct timespec read_end;
         clock_gettime(CLOCK_MONOTONIC, &read_start);
+        int gap_late = written_late;
+        gap_s = written_at.tv_sec ? seconds_between(&written_at, &read_start) : 0.0;
         read->funct(read->arg, (long)period_ns);
         clock_gettime(CLOCK_MONOTONIC, &read_end);
         read_s = seconds_between(&read_start, &read_end);
@@ -927,6 +944,9 @@ int main(int argc, char **argv) {
         }
         if (!config.same_cycle) {
             write->funct(write->arg, (long)period_ns);
+            clock_gettime(CLOCK_MONOTONIC, &written_at);
+            written_late = 0;
+            sserial_faults += sserial_faults_seen(published + 1, gap_s, gap_late, sserial_faults);
         }
 
         if (!link_dead && has_io_error && hm2_shim_cell_get(&io_error) != 0.0) {
@@ -999,6 +1019,7 @@ int main(int argc, char **argv) {
                 values[bound_input_count + HOST_READ_TIME] = read_s;
                 values[bound_input_count + HOST_ANSWER_TIME] = answer_s;
                 values[bound_input_count + HOST_ANSWERS_LATE] = (double)answers_late;
+                values[bound_input_count + HOST_SSERIAL_FAULTS] = (double)sserial_faults;
             }
             hm2_region_set_bus(&region, cycle, bus_state, bus_fault);
             clock_gettime(CLOCK_MONOTONIC, &published_at);
@@ -1024,6 +1045,7 @@ int main(int argc, char **argv) {
          * and output behind it.
          */
         if (config.same_cycle) {
+            written_late = 0;
             if (cycle != 0 && hm2_region_answered(&region) > 0) {
                 struct timespec send = next;
                 add_ns(&send, send_ns);
@@ -1038,10 +1060,14 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     answers_late++;
+                    written_late = 1;
                 }
             }
             take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
             write->funct(write->arg, (long)period_ns);
+            clock_gettime(CLOCK_MONOTONIC, &written_at);
+            sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, gap_late,
+                                                  sserial_faults);
         }
 
         /* The core said it is going away. Nothing to wait for. */
@@ -1066,6 +1092,10 @@ int main(int argc, char **argv) {
             (unsigned long long)published, (unsigned long long)region.overruns,
             (unsigned long long)stale);
     hm2_log(HM2_LOG_INFO, "the read took %.0f us at worst", read_max_s * 1e6);
+    if (sserial_watched() > 0) {
+        hm2_log(sserial_faults ? HM2_LOG_WARN : HM2_LOG_INFO, "Smart Serial: %llu fault(s)",
+                (unsigned long long)sserial_faults);
+    }
     if (config.same_cycle) {
         hm2_log(HM2_LOG_INFO,
                 "same cycle: %llu answer(s) within the period, %llu late; the core answered "

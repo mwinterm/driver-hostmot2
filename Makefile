@@ -60,7 +60,7 @@ ETH_SRC := hm2_eth.c hm2_eth_net_posix.c
 TEST_SRC := hm2_test.c
 
 SHIM_SRC := hal_shim.c rtapi_shim.c param_table.c
-HOST_SRC := main.c config.c region.c
+HOST_SRC := main.c config.c region.c sserial_watch.c
 
 HM2_OBJ  := $(addprefix $(BUILD)/hm2/,$(HM2_SRC:.c=.o))
 ETH_OBJ  := $(addprefix $(BUILD)/eth/,$(ETH_SRC:.c=.o))
@@ -68,7 +68,7 @@ TEST_OBJ := $(addprefix $(BUILD)/test/,$(TEST_SRC:.c=.o))
 SHIM_OBJ := $(addprefix $(BUILD)/shim/,$(SHIM_SRC:.c=.o))
 HOST_OBJ := $(addprefix $(BUILD)/host/,$(HOST_SRC:.c=.o))
 
-.PHONY: all clean
+.PHONY: all check clean
 all: $(BUILD)/hm2-host $(BUILD)/libhostmot2.so $(BUILD)/libhm2_eth.so \
      $(BUILD)/libhm2_test.so
 
@@ -114,6 +114,15 @@ $(BUILD)/shim/%.o: $(SHIM)/%.c
 $(BUILD)/host/%.o: $(HOST)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -c -o $@ $<
+
+# What can be checked without a board, run by `make check` and by CI.
+$(BUILD)/sserial-watch: test/sserial_watch.c host/sserial_watch.c $(BUILD)/libhm2shim.so
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ test/sserial_watch.c host/sserial_watch.c \
+		-L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
+
+check: $(BUILD)/sserial-watch
+	$(BUILD)/sserial-watch
 
 clean:
 	rm -rf $(BUILD)
