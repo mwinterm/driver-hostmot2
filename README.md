@@ -127,8 +127,11 @@ logged beside it.
 
 **Every Smart Serial fault is counted**, in `hm2-host.sserial-faults`, and
 logged with its cycle, how long before that period's read the previous write
-had ended -- the time the port's transfer had -- and whether that write
-waited for an answer that did not come in time. The driver itself says
+had ended -- the time the port's transfer had -- and what the period before
+looked like: how late it woke, how long its read took and when the control
+answered it, or that it had not by the send deadline. A short transfer then
+says which was slow: the card's reply, this process's wake-up, or the
+control. The driver itself says
 "DoIt not cleared from previous servo thread" once, at a port's fourth
 fault, and its `fault-count` pin decays to zero within cycles, so neither
 says how often a port faults. A fault costs the port that period's update

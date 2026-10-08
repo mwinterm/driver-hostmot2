@@ -1196,8 +1196,10 @@ int main(int argc, char **argv) {
     /* When the last write ended, and whether its answer came in time: what
        the next read's Smart Serial transfer had to work with. */
     struct timespec written_at = {0};
-    int written_late = 0;
     double gap_s = 0.0;
+    /* The period before this one and this one, for a fault's line. */
+    hm2_period before = {0};
+    hm2_period now_period = {0};
     int link_dead = 0;
     int bitten = 0;
 
@@ -1249,19 +1251,21 @@ int main(int argc, char **argv) {
         struct timespec read_start;
         struct timespec read_end;
         clock_gettime(CLOCK_MONOTONIC, &read_start);
-        int gap_late = written_late;
+        before = now_period;
+        now_period = (hm2_period){.wake_late_s = seconds_between(&next, &read_start)};
         gap_s = written_at.tv_sec ? seconds_between(&written_at, &read_start) : 0.0;
         read->funct(read->arg, (long)period_ns);
         clock_gettime(CLOCK_MONOTONIC, &read_end);
         read_s = seconds_between(&read_start, &read_end);
+        now_period.read_s = read_s;
         if (read_s > read_max_s) {
             read_max_s = read_s;
         }
         if (!config.same_cycle) {
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
-            written_late = 0;
-            sserial_faults += sserial_faults_seen(published + 1, gap_s, gap_late, sserial_faults);
+            sserial_faults += sserial_faults_seen(published + 1, gap_s, &before,
+                                                  now_period.wake_late_s, sserial_faults);
         }
 
         if (!link_dead && has_io_error && hm2_shim_cell_get(&io_error) != 0.0) {
@@ -1366,7 +1370,6 @@ int main(int argc, char **argv) {
          * and output behind it.
          */
         if (config.same_cycle) {
-            written_late = 0;
             if (cycle != 0 && hm2_region_answered(&region) > 0) {
                 struct timespec send = next;
                 add_ns(&send, send_ns);
@@ -1374,6 +1377,7 @@ int main(int argc, char **argv) {
                     struct timespec now;
                     clock_gettime(CLOCK_MONOTONIC, &now);
                     answer_s = seconds_between(&published_at, &now);
+                    now_period.answer_s = answer_s;
                     answers_on_time++;
                     answer_sum_s += answer_s;
                     if (answer_s > answer_max_s) {
@@ -1381,14 +1385,14 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     answers_late++;
-                    written_late = 1;
+                    now_period.answer_s = -1.0;
                 }
             }
             take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
-            sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, gap_late,
-                                                  sserial_faults);
+            sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, &before,
+                                                  now_period.wake_late_s, sserial_faults);
         }
 
         /* The core said it is going away. Nothing to wait for. */

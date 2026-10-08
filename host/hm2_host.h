@@ -38,12 +38,28 @@ int sserial_port_of(const char *name);
 int sserial_watch_add(const hm2_shim_signal *signal);
 size_t sserial_watched(void);
 /*
+ * What a period looked like, logged with a fault, so one fault says whether
+ * the card answered slowly, this process woke late or the core did [s].
+ */
+typedef struct {
+    /* How late the period woke against its schedule. */
+    double wake_late_s;
+    /* How long its read took: the round trip to the card. */
+    double read_s;
+    /* When the core answered its publish: positive, after the publish; zero,
+       not waited for (no core attached, or not same cycle); negative, not by
+       the send deadline, so the write waited until then. */
+    double answer_s;
+} hm2_period;
+
+/*
  * After a write: how many watched ports' fault counts rose since the last
  * call, each logged with the cycle, how long before this period's read the
- * previous write had ended, whether that write waited for a core that did not
- * answer in time, and `so_far` the faults before these.
+ * previous write had ended (`gap_s`), the period before (`before`) and how
+ * late this one woke, and `so_far` the faults before these.
  */
-uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, int gap_late, uint64_t so_far);
+uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *before,
+                             double wake_late_s, uint64_t so_far);
 
 /* ---------------------------------------------------------------------------
  * The region
