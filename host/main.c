@@ -721,6 +721,83 @@ static void add_ns(struct timespec *when, long long ns) {
     }
 }
 
+/*
+ * The worst cycle this process declares in the channel header, where the
+ * core's start-up check reads it (§10.2): measured rather than guessed.
+ *
+ * Before the region exists, so no core can attach and read the figure while
+ * it is still being made, the card is read and written for `measure_cycles`
+ * periods at the cycle's own period and priority -- what happens before a
+ * core attaches anyway: the driver's own values out, the watchdog petted,
+ * read then write as the cycle without one does, which leaves a Smart Serial
+ * transfer the rest of the period. The first tenth is not counted: the first
+ * packets and transactions and a cold cache are the start, not a cycle.
+ * What is declared is the worst read plus write of the rest, times
+ * `worst_case_margin`. A figure in the file is declared as it is, and the
+ * measurement is logged beside it.
+ */
+static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_funct *read,
+                                    const hm2_shim_funct *write) {
+    const long long period_ns = (long long)config->cycle_us * 1000LL;
+    const uint32_t skipped = config->measure_cycles / 10u;
+    double worst_s = 0.0;
+    double read_worst_s = 0.0;
+    double write_worst_s = 0.0;
+    uint32_t counted = 0;
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    for (uint32_t i = 0; i < config->measure_cycles && !stopping; i++) {
+        add_ns(&next, period_ns);
+        sleep_until(&next);
+        struct timespec start;
+        struct timespec between;
+        struct timespec end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        read->funct(read->arg, (long)period_ns);
+        clock_gettime(CLOCK_MONOTONIC, &between);
+        write->funct(write->arg, (long)period_ns);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        if (i < skipped) {
+            continue;
+        }
+        double read_s = seconds_between(&start, &between);
+        double write_s = seconds_between(&between, &end);
+        counted++;
+        if (read_s > read_worst_s) {
+            read_worst_s = read_s;
+        }
+        if (write_s > write_worst_s) {
+            write_worst_s = write_s;
+        }
+        if (read_s + write_s > worst_s) {
+            worst_s = read_s + write_s;
+        }
+    }
+    if (config->worst_case_cycle_ns > 0) {
+        if (counted > 0) {
+            hm2_log(HM2_LOG_INFO,
+                    "worst cycle: %.0f us declared, as the file says; measured %.0f us at worst "
+                    "over %u period(s) (read %.0f us, write %.0f us)",
+                    (double)config->worst_case_cycle_ns / 1e3, worst_s * 1e6, counted,
+                    read_worst_s * 1e6, write_worst_s * 1e6);
+        }
+        return config->worst_case_cycle_ns;
+    }
+    uint64_t declared = (uint64_t)(worst_s * config->worst_case_margin * 1e9) + 1u;
+    hm2_log(HM2_LOG_INFO,
+            "worst cycle: %.0f us declared, measured %.0f us at worst over %u period(s) (read "
+            "%.0f us, write %.0f us) times %.2f",
+            (double)declared / 1e3, worst_s * 1e6, counted, read_worst_s * 1e6,
+            write_worst_s * 1e6, config->worst_case_margin);
+    if (declared > (uint64_t)period_ns) {
+        hm2_log(HM2_LOG_WARN,
+                "the declared worst cycle, %.0f us, does not fit the %u us cycle: the core will "
+                "refuse this machine with both figures named",
+                (double)declared / 1e3, config->cycle_us);
+    }
+    return declared;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr,
@@ -849,6 +926,13 @@ int main(int argc, char **argv) {
         goto fail;
     }
 
+    /* At the cycle's priority from here on, the measurement included. */
+    ask_for_realtime(&config);
+    uint64_t worst_case_cycle_ns = declare_worst_cycle(&config, read, write);
+    if (stopping) {
+        goto fail;
+    }
+
     hm2_region region;
     if (hm2_region_create(&region, config.region, bound_input_count + HOST_SIGNALS,
                           bound_output_count) != 0) {
@@ -861,7 +945,7 @@ int main(int argc, char **argv) {
         .response_watchdog_cycles = config.response_watchdog_cycles,
         .drive_watchdog_us = config.drive_watchdog_us,
         .spin_iterations = config.spin_iterations,
-        .worst_case_cycle_ns = config.worst_case_cycle_ns,
+        .worst_case_cycle_ns = worst_case_cycle_ns,
         .flags = config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u,
     };
     hm2_region_describe(&region, &header);
@@ -890,7 +974,6 @@ int main(int argc, char **argv) {
     hm2_log(HM2_LOG_INFO, "cyclic functions: '%s' and '%s'", read->name, write->name);
 
     log_to_ring();
-    ask_for_realtime(&config);
     hm2_shim_enter_cycle();
 
     const long long period_ns = (long long)config.cycle_us * 1000LL;

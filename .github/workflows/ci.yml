@@ -121,6 +121,22 @@ jobs:
               || { echo "hm2-host.$name was not published" >&2; exit 1; }
           done
 
+          # The worst cycle in the header is measured before the region
+          # exists, never a figure nobody measured: the line comes first.
+          grep -qE 'worst cycle: [0-9]+ us declared, measured [0-9]+ us at worst over 900 period' \
+            /tmp/host.log \
+            || { echo "the worst cycle was not measured" >&2; exit 1; }
+          measured=$(grep -n 'worst cycle:' /tmp/host.log | head -1 | cut -d: -f1)
+          created=$(grep -n 'region /cnc-hm2-test:' /tmp/host.log | head -1 | cut -d: -f1)
+          [ "$measured" -lt "$created" ] \
+            || { echo "the region existed before its worst cycle was measured" >&2; exit 1; }
+          # And a figure in the file is declared as it is.
+          { cat examples/test-board.conf; echo 'worst_case_cycle_ns = 600000'; } \
+            > /tmp/stated.conf
+          timeout 4 ./build/hm2-host /tmp/stated.conf build > /tmp/stated.log 2>&1 || true
+          grep -q 'worst cycle: 600 us declared, as the file says' /tmp/stated.log \
+            || { cat /tmp/stated.log; echo "a stated worst cycle was not declared" >&2; exit 1; }
+
       # A `pin.` line fixes a pin the driver only reads, and publishes it for
       # reading only (channel 2.2.0, the control's ADR 0045 §2). Everything
       # else a `pin.` line could name is refused by name, with its line.

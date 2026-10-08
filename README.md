@@ -109,6 +109,22 @@ The process says how that goes, as inputs beside the driver's pins, in SI:
 `hm2-host.answers-late` (a count). A recorder on the control's side
 (LeafSCOPE) records them like any pin; the worst of each is logged at stop.
 
+**The worst cycle is measured, not guessed.** The channel header carries
+what a cycle of this process costs at worst, and the control refuses a
+machine whose cycle that does not fit. Before the region exists -- so no
+control can read the figure before it is made -- the process reads and
+writes the card for `measure_cycles` periods (1000, a second at 1 ms) at
+the cycle's own period and priority, and declares the worst read plus write
+after the first tenth, times `worst_case_margin` (1.5). On the fake board,
+where a read is a memory copy rather than a UDP round trip to a card:
+
+```
+worst cycle: 7 us declared, measured 4 us at worst over 900 period(s) (read 3 us, write 3 us) times 1.50
+```
+
+A `worst_case_cycle_ns` in the file is declared as it is, the measurement
+logged beside it.
+
 **Every Smart Serial fault is counted**, in `hm2-host.sserial-faults`, and
 logged with its cycle, how long before that period's read the previous write
 had ended -- the time the port's transfer had -- and whether that write

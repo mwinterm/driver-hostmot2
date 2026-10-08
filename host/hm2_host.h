@@ -136,7 +136,15 @@ typedef struct {
     uint32_t response_watchdog_cycles;
     uint32_t drive_watchdog_us;
     uint32_t spin_iterations;
+    /* What this process declares it needs per cycle; zero to measure it. */
     uint64_t worst_case_cycle_ns;
+    /*
+     * The measurement: how many periods the card is read and written before
+     * the region exists, the first tenth of them not counted, and the margin
+     * the worst of the rest is declared with.
+     */
+    uint32_t measure_cycles;
+    double worst_case_margin;
     /* How far into the period the outputs go on the wire, 0..1. */
     double send_deadline;
     /*
