@@ -116,12 +116,17 @@ $(BUILD)/host/%.o: $(HOST)/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -c -o $@ $<
 
 # What can be checked without a board, run by `make check` and by CI.
+$(BUILD)/shim-pins: test/shim_pins.c $(BUILD)/libhm2shim.so
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ $< -L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
+
 $(BUILD)/sserial-watch: test/sserial_watch.c host/sserial_watch.c $(BUILD)/libhm2shim.so
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ test/sserial_watch.c host/sserial_watch.c \
 		-L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
 
-check: $(BUILD)/sserial-watch
+check: $(BUILD)/shim-pins $(BUILD)/sserial-watch
+	$(BUILD)/shim-pins
 	$(BUILD)/sserial-watch
 
 clean:

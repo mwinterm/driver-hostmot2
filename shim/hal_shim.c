@@ -283,6 +283,28 @@ static void *publish(const char *name, hm2_shim_type type, hm2_shim_dir dir, voi
 }
 
 /*
+ * Whether the driver writes a pin it declares HAL_IN, which then has to be
+ * published both ways as a HAL_IO pin is.
+ *
+ * One does: the encoder declares `probe-enable` an input and clears it
+ * itself when the probe latches (encoder.c, `hm2_encoder_instance_update_
+ * rawcounts_and_handle_index`), exactly as it clears the HAL_IO
+ * `index-enable` at an index; the stepgen declares its own `probe-enable`
+ * HAL_IO. Published one way, the control's held true would be written over
+ * the driver's clear every cycle -- the latch re-armed the moment it fired,
+ * and the control never told it had -- so it is published in both
+ * directions and the host applies the control's value only when it changes,
+ * as it does `index-enable` (the control's ADR 0052 §2). Matched by name,
+ * because the source that declares it is upstream's and stays as it came.
+ */
+static int written_back_anyway(const char *name) {
+    static const char suffix[] = ".probe-enable";
+    size_t length = strlen(name);
+    size_t tail = sizeof(suffix) - 1;
+    return length > tail && strcmp(name + length - tail, suffix) == 0;
+}
+
+/*
  * The common half of every `hal_pin_new_*`: a cell, a name, and one or two
  * entries in the table.
  *
@@ -291,7 +313,8 @@ static void *publish(const char *name, hm2_shim_type type, hm2_shim_dir dir, voi
  * the core writes its request into the cell before the driver's read function
  * and reads the driver's answer out of it after the write function, so a
  * conversation HAL holds in one memory location becomes two signals and one
- * cycle of latency (see hm2_shim.h).
+ * cycle of latency (see hm2_shim.h). So does a HAL_IN pin the driver writes
+ * anyway (`written_back_anyway`).
  */
 static int new_pin(hal_pdir_t dir, void **ref, hm2_shim_type type, hm2_cell initial,
                    const char *fmt, va_list args) {
@@ -308,7 +331,7 @@ static int new_pin(hal_pdir_t dir, void **ref, hm2_shim_type type, hm2_cell init
     }
     *cell = initial;
 
-    if ((dir & HAL_IO) == HAL_IO) {
+    if ((dir & HAL_IO) == HAL_IO || ((dir & HAL_IN) && written_back_anyway(name))) {
         if (!publish(name, type, HM2_SHIM_FROM_CORE, cell) ||
             !publish(name, type, HM2_SHIM_TO_CORE, cell)) {
             return -ENOMEM;

@@ -29,10 +29,13 @@ jobs:
       - name: the driver builds unmodified against the shim
         run: make -j"$(nproc)"
 
-      # What no fake board shows: the fake boards have no Smart Serial port.
-      # Each rise of a port's fault count is one fault, counted and logged;
+      # What no fake board shows: the fake boards have no encoder and no
+      # Smart Serial port. A pin the driver writes back -- HAL_IO, and the
+      # encoder's probe-enable, which upstream declares HAL_IN and clears
+      # when the probe latches -- goes across the channel both ways; each
+      # rise of a port's fault count is one fault, counted and logged, and
       # the driver's decay of it is none.
-      - name: every Smart Serial fault is counted
+      - name: pins written back go both ways, every Smart Serial fault is counted
         run: make check
 
       - name: nothing is left undefined
