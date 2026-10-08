@@ -164,6 +164,47 @@ jobs:
           grep -q 'does not fit the pin, which is a bit' /tmp/refused.log \
             || { echo "a value that does not fit was not refused" >&2; exit 1; }
 
+      # LinuxCNC's setsserial without LinuxCNC: the driver loaded from the same
+      # file, every Smart Serial remote's parameters listed, and upstream's
+      # module run on a command. The fake board has no remote, so what is
+      # checked here is everything around one: upstream's module loads and
+      # runs, a command it cannot carry out fails the process, a malformed one
+      # is refused, and a region in use refuses the lot.
+      - name: --setsserial lists the remotes and runs upstream's setsserial
+        run: |
+          region=$(grep -oP '^region\s*=\s*\K\S+' examples/test-board.conf)
+          rm -f "/dev/shm/${region#/}"
+          if ./build/hm2-host --setsserial examples/test-board.conf build \
+               > /tmp/list.out 2> /tmp/list.err; then
+            echo "a board with no remote listed something" >&2; exit 1
+          fi
+          grep -q 'no Smart Serial remote answered' /tmp/list.err \
+            || { cat /tmp/list.err; echo "the empty list was not said" >&2; exit 1; }
+          [ -e "/dev/shm/${region#/}" ] \
+            && { echo "--setsserial created the region" >&2; exit 1; }
+
+          if ./build/hm2-host --setsserial examples/test-board.conf build \
+               set hm2_test.0.7i77.0.0.nvbaudrate 1 > /dev/null 2> /tmp/set.err; then
+            echo "a set on a remote that is not there succeeded" >&2; exit 1
+          fi
+          grep -q "component 'setsserial' created" /tmp/set.err \
+            || { cat /tmp/set.err; echo "upstream's setsserial did not run" >&2; exit 1; }
+          grep -q 'Unable to find sserial remote corresponding to hm2_test.0.7i77.0.0' /tmp/set.err \
+            || { echo "setsserial's own refusal was not passed on" >&2; exit 1; }
+
+          if ./build/hm2-host --setsserial examples/test-board.conf build erase x y \
+               2> /tmp/bad.err; then
+            echo "a command setsserial does not have was accepted" >&2; exit 1
+          fi
+
+          touch "/dev/shm/${region#/}"
+          if ./build/hm2-host --setsserial examples/test-board.conf build 2> /tmp/busy.err; then
+            echo "--setsserial ran beside a region" >&2; exit 1
+          fi
+          rm -f "/dev/shm/${region#/}"
+          grep -q 'a control is running on this card' /tmp/busy.err \
+            || { cat /tmp/busy.err; echo "the region in use was not said" >&2; exit 1; }
+
       # The rule that makes the two-repository split mean anything, checked
       # from this side too (ADR 0022 §8).
       # One file crosses between the two repositories, in this direction, and

@@ -138,6 +138,29 @@ A port that has just been started may fault a few times while it comes up --
 the driver lets four pass before it says anything -- and those are counted
 too.
 
+**A remote's stored settings and firmware: `--setsserial`.** LinuxCNC's
+`setsserial` without LinuxCNC on the machine. With the control stopped:
+
+```sh
+build/hm2-host --setsserial machine/hm2-host.conf build
+build/hm2-host --setsserial machine/hm2-host.conf build set hm2_7i92.0.7i77.0.0.nv<name> <value>
+build/hm2-host --setsserial machine/hm2-host.conf build flash hm2_7i92.0.7i77.0.0 ./7i77.BIN
+```
+
+The driver is loaded from the same file as for a run, and every Smart Serial
+remote's parameters are listed on stdout, the stored ones -- `nv...` --
+marked `stored`, its firmware revisions among the rest. A command is run by
+upstream's own `setsserial.c`, unmodified (`build/libsetsserial.so`): `set`
+writes a stored setting, `flash` a remote's firmware from a `.BIN` file,
+whose path has a slash in it or is looked for under `HM2_FIRMWARE_PATH`
+(`/lib/firmware`). A remote reads its stored settings when it starts, so a
+new value is in force, and listed, after the remote has been powered off and
+on. Flashing needs the board at 115200 baud, by jumper and by
+`sserial_baudrate`, as upstream says. Nothing is published and nothing
+cycles: the card's watchdog stops its outputs meanwhile, as under LinuxCNC's
+`halrun`. A region the file names that exists -- a control running on the
+card, or one that died without removing it -- refuses the lot.
+
 What a pin *means* — which is an axis's feedback, what its limits are, which
 way is X — is **not here**. That is the control's machine description, on the
 other side of the channel. Two files that both described the machine would be

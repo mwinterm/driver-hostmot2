@@ -34,6 +34,7 @@
  */
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -798,22 +799,167 @@ static uint64_t declare_worst_cycle(const hm2_config *config, const hm2_shim_fun
     return declared;
 }
 
+/* ---------------------------------------------------------------------------
+ * --setsserial: a Smart Serial remote's stored settings and firmware
+ * ------------------------------------------------------------------------- */
+
+/*
+ * LinuxCNC's `setsserial` without LinuxCNC. The driver is loaded from the same
+ * file as for a run, every Smart Serial remote's parameters are listed -- its
+ * stored settings, the `nv...` ones, and its revisions among them -- and a
+ * command, if there is one, is run by upstream's own setsserial module,
+ * unmodified: `set <parameter> <value>` writes a stored setting, `flash
+ * <remote> <file>.BIN` the remote's firmware. Then the process exits: no
+ * region, no cycle, and the card's watchdog stops its outputs meanwhile, as
+ * under LinuxCNC's halrun.
+ */
+static int setsserial_command(const char *word) {
+    return strcmp(word, "set") == 0 || strcmp(word, "flash") == 0;
+}
+
+/*
+ * A control attached to the card, or one that died and left its region: the
+ * card answers whoever talks to it, and two masters writing it is how a
+ * remote is left half-flashed. So the region the file names must not exist.
+ */
+static int region_in_use(const hm2_config *config) {
+    int fd = shm_open(config->region, O_RDONLY, 0);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    hm2_log(HM2_LOG_ERROR,
+            "%s exists: a control is running on this card, or one stopped without removing "
+            "it. Stop the control first; if no hm2-host is running, remove /dev/shm%s",
+            config->region, config->region);
+    return 1;
+}
+
+/*
+ * Every parameter of a Smart Serial remote, on stdout: hostmot2's own
+ * `hm2_get_sserial` says which, as it does for setsserial -- a parameter is a
+ * remote's when the remote's name is in it.
+ */
+static size_t list_sserial(void *generic) {
+    void *symbol = dlsym(generic, "hm2_get_sserial");
+    void *(*find)(void **, const char *) = NULL;
+    memcpy(&find, &symbol, sizeof(symbol));
+    if (!find) {
+        hm2_log(HM2_LOG_ERROR, "libhostmot2 exports no hm2_get_sserial");
+        return 0;
+    }
+    size_t listed = 0;
+    for (size_t i = 0; i < hm2_shim_param_count(); i++) {
+        hm2_shim_signal view;
+        int writable = 0;
+        if (!hm2_shim_param_view(i, &view, &writable)) {
+            continue;
+        }
+        void *board = NULL;
+        if (!find(&board, view.name)) {
+            continue;
+        }
+        const char *leaf = strrchr(view.name, '.');
+        int stored = leaf && strncmp(leaf + 1, "nv", 2) == 0;
+        printf("%-56s %14.10g%s\n", view.name, hm2_shim_cell_get(&view),
+               stored ? "  stored" : "");
+        listed++;
+    }
+    fflush(stdout);
+    return listed;
+}
+
+/* Upstream's setsserial module, given `command` as its `cmd` parameter. */
+static int run_setsserial(const char *module_dir, const char *command) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/libsetsserial.so", module_dir);
+    hm2_module module = {0};
+    if (load_module(&module, path, 0) != 0) {
+        return -1;
+    }
+    if (hm2_shim_set_module_param(module.handle, "cmd", 0, command) != 0) {
+        hm2_log(HM2_LOG_ERROR, "%s declares no cmd parameter", path);
+        return -1;
+    }
+    hm2_log(HM2_LOG_INFO, "setsserial: %s", command);
+    int status = module.app_main();
+    if (module.app_exit) {
+        module.app_exit();
+    }
+    return status;
+}
+
+static int setsserial_mode(void *generic, const char *module_dir, char **words, int count) {
+    size_t listed = list_sserial(generic);
+    if (listed == 0) {
+        hm2_log(HM2_LOG_WARN, "no Smart Serial remote answered: nothing to list or set");
+    }
+    if (count == 0) {
+        return listed > 0 ? 0 : 1;
+    }
+    char command[1024] = "";
+    for (int i = 0; i < count; i++) {
+        if (strlen(command) + strlen(words[i]) + 2 > sizeof(command)) {
+            hm2_log(HM2_LOG_ERROR, "the setsserial command is too long");
+            return 1;
+        }
+        if (i > 0) {
+            strcat(command, " ");
+        }
+        strcat(command, words[i]);
+    }
+    int status = run_setsserial(module_dir, command);
+    if (status != 0) {
+        hm2_log(HM2_LOG_ERROR, "setsserial failed (%d): %s", status, command);
+        return 1;
+    }
+    hm2_log(HM2_LOG_INFO,
+            "setsserial: done. A remote reads its stored settings when it starts: the new "
+            "value is in force, and listed here, after the remote has been powered off and on");
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
+    int setsserial = argc > 1 && strcmp(argv[1], "--setsserial") == 0;
+    int first = setsserial ? 2 : 1;
+    if (argc < first + 1) {
         fprintf(stderr,
                 "usage: hm2-host <config file> [module directory]\n"
+                "       hm2-host --setsserial <config file> [module directory] [command]\n"
                 "\n"
                 "Runs LinuxCNC's HostMot2 driver as a process of its own and publishes\n"
                 "every HAL pin it declares into a shared region the control attaches to\n"
                 "(ADR 0022). What a pin means is said in the control's machine\n"
-                "description, not here.\n");
+                "description, not here.\n"
+                "\n"
+                "--setsserial, with the control stopped: lists every Smart Serial remote's\n"
+                "parameters, its stored settings marked, and runs LinuxCNC's setsserial\n"
+                "on a command:\n"
+                "  set <remote's parameter> <value>   a stored setting, one the list marks\n"
+                "  flash <remote> <path>.BIN          the remote's firmware\n");
         return 2;
     }
-    const char *config_path = argv[1];
-    const char *module_dir = argc > 2 ? argv[2] : ".";
+    const char *config_path = argv[first];
+    const char *module_dir = ".";
+    int command_at = first + 1;
+    if (argc > command_at && !setsserial_command(argv[command_at])) {
+        module_dir = argv[command_at];
+        command_at++;
+    }
+    int command_words = argc > command_at ? argc - command_at : 0;
+    if (command_words > 0 && (!setsserial || command_words != 3 ||
+                              !setsserial_command(argv[command_at]))) {
+        fprintf(stderr, "hm2-host: a command is `set <parameter> <value>` or `flash <remote> "
+                        "<path>.BIN`, after --setsserial\n");
+        return 2;
+    }
 
     hm2_config config;
     if (hm2_config_load(&config, config_path) != 0) {
+        return 1;
+    }
+    if (setsserial && region_in_use(&config)) {
+        hm2_config_free(&config);
         return 1;
     }
     hm2_log_set_level(config.log_level);
@@ -909,6 +1055,20 @@ int main(int argc, char **argv) {
     }
     if (stray > 0) {
         goto fail;
+    }
+
+    if (setsserial) {
+        int failed = setsserial_mode(generic.handle, module_dir, argv + command_at, command_words);
+        if (transport.app_exit) {
+            transport.app_exit();
+        }
+        if (generic.app_exit) {
+            generic.app_exit();
+        }
+        hm2_shim_flush_log();
+        hm2_shim_fini();
+        hm2_config_free(&config);
+        return failed;
     }
 
     const hm2_shim_funct *read = hm2_shim_funct_ending(".read");

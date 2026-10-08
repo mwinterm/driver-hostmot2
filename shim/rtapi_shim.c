@@ -284,9 +284,15 @@ int rtapi_request_firmware(const struct rtapi_firmware **fw, const char *name,
     }
     *fw = NULL;
 
+    /* A name with a slash in it is a path, as `hm2-host --setsserial flash`
+       is given one; a bare name is looked for where the driver's are. */
     const char *root = getenv("HM2_FIRMWARE_PATH");
     char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", root ? root : "/lib/firmware", name);
+    if (strchr(name, '/')) {
+        snprintf(path, sizeof(path), "%s", name);
+    } else {
+        snprintf(path, sizeof(path), "%s/%s", root ? root : "/lib/firmware", name);
+    }
 
     FILE *file = fopen(path, "rb");
     if (!file) {
