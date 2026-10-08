@@ -89,11 +89,11 @@ uint64_t sserial_faults_seen(uint64_t cycle, double gap_s, const hm2_period *bef
                         "Smart Serial port %d: fault %llu, cycle %llu: its transfer had not "
                         "finished at this period's read, or failed. The previous write ended "
                         "%.0f us before the read. The period before woke %.0f us late, its "
-                        "read took %.0f us and the core %s; this one woke %.0f us late. Fault "
-                        "count %.0f%s",
+                        "read took %.0f us, the core %s and its write took %.0f us; this one "
+                        "woke %.0f us late. Fault count %.0f%s",
                         ports[i], (unsigned long long)number, (unsigned long long)cycle,
                         gap_s * 1e6, before->wake_late_s * 1e6, before->read_s * 1e6, answered,
-                        wake_late_s * 1e6, count,
+                        before->write_s * 1e6, wake_late_s * 1e6, count,
                         number == SSERIAL_FAULTS_LOGGED ? "; from here every 100th is logged"
                                                         : "");
             }

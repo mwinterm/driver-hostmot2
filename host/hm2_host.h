@@ -50,6 +50,10 @@ typedef struct {
        not waited for (no core attached, or not same cycle); negative, not by
        the send deadline, so the write waited until then. */
     double answer_s;
+    /* From the answer, or the deadline, to the end of the write: the core's
+       outputs taken into the pins and the driver's write, the packet built
+       and sent. */
+    double write_s;
 } hm2_period;
 
 /*

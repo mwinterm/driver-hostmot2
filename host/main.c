@@ -1264,6 +1264,7 @@ int main(int argc, char **argv) {
         if (!config.same_cycle) {
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
+            now_period.write_s = seconds_between(&read_end, &written_at);
             sserial_faults += sserial_faults_seen(published + 1, gap_s, &before,
                                                   now_period.wake_late_s, sserial_faults);
         }
@@ -1388,9 +1389,12 @@ int main(int argc, char **argv) {
                     now_period.answer_s = -1.0;
                 }
             }
+            struct timespec answered_at;
+            clock_gettime(CLOCK_MONOTONIC, &answered_at);
             take_answer(&region, &attached, &stale, config.response_watchdog_cycles);
             write->funct(write->arg, (long)period_ns);
             clock_gettime(CLOCK_MONOTONIC, &written_at);
+            now_period.write_s = seconds_between(&answered_at, &written_at);
             sserial_faults += sserial_faults_seen(cycle ? cycle : published, gap_s, &before,
                                                   now_period.wake_late_s, sserial_faults);
         }

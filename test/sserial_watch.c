@@ -67,8 +67,8 @@ int main(void) {
     const hm2_shim_signal *count1 = hm2_shim_signal_at(1);
     uint64_t faults = 0;
     /* A period that answered in time, and one whose core did not. */
-    const hm2_period quiet = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = 0.00004};
-    const hm2_period late = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = -1.0};
+    const hm2_period quiet = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = 0.00004, .write_s = 0.00002};
+    const hm2_period late = {.wake_late_s = 0.000002, .read_s = 0.0003, .answer_s = -1.0, .write_s = 0.00002};
     faults += sserial_faults_seen(1, 0.0009, &quiet, 0.0, faults);
     expect(faults == 0, "no fault while nothing rose");
 
@@ -78,8 +78,8 @@ int main(void) {
     faults += sserial_faults_seen(2, 0.00015, &late, 0.0, faults);
     expect(faults == 2, "one fault per port that rose");
     expect(strstr(last_line, "ended 150 us before the read") != NULL, "the gap is said");
-    expect(strstr(last_line, "read took 300 us and the core had not answered by the send "
-                             "deadline") != NULL,
+    expect(strstr(last_line, "read took 300 us, the core had not answered by the send "
+                             "deadline and its write took 20 us") != NULL,
            "the period before is said, its late answer among it");
 
     /* The driver's decay is no fault. */
