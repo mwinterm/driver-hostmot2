@@ -486,7 +486,7 @@ static uint32_t channel_role(const char *name, hm2_shim_type type) {
     if (strstr(name, ".velocity")) {
         return CNC_OUTBOARD_ROLE_VELOCITY;
     }
-    if (strstr(name, ".index-enable") || strstr(name, ".latch")) {
+    if (strstr(name, ".index-enable") || strstr(name, ".probe-enable") || strstr(name, ".latch")) {
         return CNC_OUTBOARD_ROLE_PROBE_LATCH;
     }
     return type == HM2_SHIM_BOOL ? CNC_OUTBOARD_ROLE_DIGITAL : CNC_OUTBOARD_ROLE_ANALOG;
