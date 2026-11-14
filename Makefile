@@ -122,7 +122,7 @@ $(BUILD)/shim/%.o: $(SHIM)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -c -o $@ $<
 
-$(BUILD)/host/%.o: $(HOST)/%.c
+$(BUILD)/host/%.o: $(HOST)/%.c $(HOST)/hm2_host.h $(HOST)/include/cnc_outboard.h $(SHIM)/hm2_shim.h
 	@mkdir -p $(@D)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -c -o $@ $<
 
@@ -136,9 +136,16 @@ $(BUILD)/sserial-watch: test/sserial_watch.c host/sserial_watch.c $(BUILD)/libhm
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ test/sserial_watch.c host/sserial_watch.c \
 		-L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS)
 
-check: $(BUILD)/shim-pins $(BUILD)/sserial-watch
+$(BUILD)/region-origin: test/region_origin.c $(BUILD)/host/region.o $(BUILD)/libhm2shim.so
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT) -o $@ $< $(BUILD)/host/region.o \
+		-L$(BUILD) -lhm2shim $(LDFLAGS) $(LDLIBS) -lrt
+
+check: $(BUILD)/shim-pins $(BUILD)/sserial-watch $(BUILD)/region-origin \
+       $(BUILD)/hm2-host $(BUILD)/libhm2_test.so
 	$(BUILD)/shim-pins
 	$(BUILD)/sserial-watch
+	$(BUILD)/region-origin
+	sh test/published-origin.sh $(BUILD)
 
 clean:
 	rm -rf $(BUILD)

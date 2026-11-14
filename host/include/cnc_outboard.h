@@ -64,17 +64,20 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 
 /*
- * Channel version, semantic. Each side refuses a region whose major differs
- * from its own: the layout is mapped, not parsed, so a mismatch is not
- * something either end can work around.
+ * Channel version, semantic. Unreleased 2.4 builds require all three version
+ * components to match. Rebuild both peers after changing the channel.
  *
  * Appending a field to the end of an axis structure is a major bump here, not
  * a minor one, because the arrays are indexed by offset on both sides. Only
  * changes that leave every existing offset alone are minor.
  */
 #define CNC_OUTBOARD_ABI_VERSION_MAJOR 2
-#define CNC_OUTBOARD_ABI_VERSION_MINOR 3
+#define CNC_OUTBOARD_ABI_VERSION_MINOR 4
 #define CNC_OUTBOARD_ABI_VERSION_PATCH 0
+
+/* 2.4.0 (ADR 0077) identifies the installed observation origin and appends
+ * an optional bounded receiver after fixed and named signal storage. Every
+ * earlier offset is preserved. The two peers must agree on this version. */
 
 /*
  * 2.3.0 (ADR 0046) let a process write the core's answer in the cycle it
@@ -392,6 +395,112 @@ typedef enum cnc_outboard_signal_direction {
 /* Every bit this version defines. */
 #define CNC_OUTBOARD_SIGNAL_FLAGS_KNOWN (CNC_OUTBOARD_SIGNAL_ON_CHANGE | CNC_OUTBOARD_SIGNAL_FIXED)
 
+/* Optional receiver tail (2.4, ADR 0077). At the cache-line-aligned end of
+ * the entire mapped object, after fixed and named-signal storage. Commands
+ * and frames share the normal response/cycle parity handshake. Each command
+ * is a persistent desired state for one ID, repeated until acknowledged.
+ * A publisher that skips a physical observation accounts its losses even
+ * when the channel cannot publish. Acknowledged arm is its own empty frame.
+ * A CANCELLED frame attests that no unconsumed detector state survives. */
+#define CNC_OUTBOARD_RECEIVER_IDLE 0u
+#define CNC_OUTBOARD_RECEIVER_ARM 1u
+#define CNC_OUTBOARD_RECEIVER_FREEZE 2u
+#define CNC_OUTBOARD_RECEIVER_CANCEL 3u
+#define CNC_OUTBOARD_RECEIVER_OPENED 1u
+#define CNC_OUTBOARD_RECEIVER_ACTIVE 2u
+#define CNC_OUTBOARD_RECEIVER_CANCELLED 3u
+#define CNC_OUTBOARD_RECEIVER_FAILED 4u
+#define CNC_OUTBOARD_RECEIVER_BATCH 32u
+#define CNC_OUTBOARD_RECEIVER_EDGE 1u
+#define CNC_OUTBOARD_RECEIVER_ANALOG 2u
+#define CNC_OUTBOARD_RECEIVER_ENTER 1u
+#define CNC_OUTBOARD_RECEIVER_LEAVE 2u
+#define CNC_OUTBOARD_RECEIVER_VALUE 3u
+#define CNC_OUTBOARD_RECEIVER_HARDWARE 1u
+#define CNC_OUTBOARD_RECEIVER_MODELED 2u
+#define CNC_OUTBOARD_RECEIVER_READY 1u
+#define CNC_OUTBOARD_RECEIVER_AIR 2u
+#define CNC_OUTBOARD_RECEIVER_SHUTTER 4u
+#define CNC_OUTBOARD_RECEIVER_CLEAN 8u
+#define CNC_OUTBOARD_RECEIVER_CLOSED 16u
+/* Beam unobstructed at observed_ns (separate from clean optics). */
+#define CNC_OUTBOARD_RECEIVER_CLEAR 32u
+/* Recorded receiver data replayed by a modeled source. */
+#define CNC_OUTBOARD_RECEIVER_REPLAYED 64u
+
+typedef struct cnc_outboard_receiver_caps {
+  uint64_t clock_id;      /* Nonzero, stable within this driver instance. */
+  uint32_t modes;         /* EDGE, ANALOG or both. */
+  uint32_t axes;          /* Bit i: local axis i supplies position. */
+  uint32_t quality;       /* Optical measurement source: HARDWARE or MODELED. */
+  uint32_t max_batch;     /* Maximum produced in any one servo period. */
+  double bandwidth;       /* Sustained events/s or samples/s. */
+  uint32_t timestamp_quality; /* HARDWARE monotonic clock, or MODELED. */
+  uint32_t phase_quality;     /* Independently synchronized spindle encoder or model. */
+} cnc_outboard_receiver_caps;
+
+typedef struct cnc_outboard_receiver_arm_request {
+  uint64_t window;        /* Nonzero host identity, echoed in every reply. */
+  uint32_t channel;
+  uint32_t spindle;
+  uint32_t mode;
+  uint32_t capacity;      /* Host limit for the whole window. */
+} cnc_outboard_receiver_arm_request;
+
+typedef struct cnc_outboard_receiver_sample {
+  uint64_t window;
+  uint64_t sequence;      /* Starts at one. Loss still advances it. */
+  uint64_t timestamp_ns;  /* Strictly increasing within the clock domain. */
+  uint64_t clock_id;
+  uint32_t channel;
+  uint32_t kind;          /* ENTER, LEAVE or VALUE. */
+  uint32_t valid_axes;    /* Bits in driver-local axis order. */
+  uint32_t quality;       /* Optical measurement quality. */
+  double phase;           /* Unwrapped spindle phase [rad] at the sample. */
+  double value;           /* Normalized transmission [0,1] for VALUE. */
+  double position[CNC_OUTBOARD_MAX_AXES]; /* Raw SI in axis.N.position_fb frame. */
+  uint32_t hardware_axes; /* Subset of valid_axes; all other valid axes are MODELED. */
+  uint32_t timestamp_quality;
+  uint32_t phase_quality;
+  uint32_t reserved;
+} cnc_outboard_receiver_sample;
+
+typedef struct cnc_outboard_receiver_status {
+  uint64_t window;
+  uint64_t clock_id;
+  uint64_t observed_ns;   /* Latest device observation; advances even on silence. */
+  uint64_t produced;      /* Cumulative, including undelivered/lost records. */
+  uint64_t lost;          /* Cumulative device losses including any overflow. */
+  double phase;           /* Unwrapped, at observed_ns. */
+  uint32_t channel;
+  uint32_t flags;         /* Qualified health throughout interval, CLOSED at end. */
+  uint32_t count;         /* Number of samples written by this drain. */
+  uint32_t quality;       /* Optical measurement quality. */
+  uint32_t timestamp_quality;
+  uint32_t phase_quality;
+} cnc_outboard_receiver_status;
+
+typedef struct cnc_outboard_receiver_command {
+  uint32_t action;
+  uint32_t reserved;
+  cnc_outboard_receiver_arm_request request;
+} cnc_outboard_receiver_command;
+
+typedef struct cnc_outboard_receiver_frame {
+  uint32_t state;
+  uint32_t reserved;
+  cnc_outboard_receiver_status status;
+  cnc_outboard_receiver_sample samples[CNC_OUTBOARD_RECEIVER_BATCH];
+} cnc_outboard_receiver_frame;
+
+typedef struct cnc_outboard_receiver {
+  uint32_t channel;
+  uint32_t spindle;
+  cnc_outboard_receiver_caps caps;
+  alignas(64) cnc_outboard_receiver_frame frame[2];
+  alignas(64) cnc_outboard_receiver_command command[2];
+} cnc_outboard_receiver;
+
 /* How to present the value. Every value is a double on the wire regardless. */
 typedef enum cnc_outboard_signal_type {
   CNC_OUTBOARD_SIGNAL_BOOL = 0,
@@ -520,7 +629,8 @@ typedef struct cnc_outboard_signal_block {
    */
   uint64_t input_stride;
   uint64_t output_stride;
-  /* Total bytes of the region, this block and everything after it included. */
+  /* Bytes through the end of fixed and named signal storage. The optional
+   * 2.4 receiver starts at this offset and adds sizeof(cnc_outboard_receiver). */
   uint64_t region_size;
   uint64_t reserved[2];
 } cnc_outboard_signal_block;
@@ -555,7 +665,8 @@ typedef struct cnc_outboard_config {
    *
    * The fixed part only. From 1.1.0 the object is larger than this whenever
    * the process declares signals; `cnc_outboard_signal_block.region_size` says
-   * how much larger. Keeping this field's meaning is what lets a 1.0.0 core
+   * how far named signal storage extends. A 2.4 receiver adds its own extent.
+   * Keeping this field's meaning is what lets a 1.0.0 core
    * attach to a 1.1.0 region and drive its axes.
    */
   uint64_t layout_size;
@@ -630,7 +741,10 @@ typedef struct cnc_outboard_config {
 #define CNC_OUTBOARD_CONFIG_SAME_CYCLE (1u << 0)
 
 /* Every bit this version defines. */
-#define CNC_OUTBOARD_CONFIG_FLAGS_KNOWN CNC_OUTBOARD_CONFIG_SAME_CYCLE
+#define CNC_OUTBOARD_CONFIG_MODELED_IO (1u << 1)
+#define CNC_OUTBOARD_CONFIG_HARDWARE_IO (1u << 2)
+#define CNC_OUTBOARD_CONFIG_RECEIVER (1u << 3)
+#define CNC_OUTBOARD_CONFIG_FLAGS_KNOWN (CNC_OUTBOARD_CONFIG_SAME_CYCLE | CNC_OUTBOARD_CONFIG_MODELED_IO | CNC_OUTBOARD_CONFIG_HARDWARE_IO | CNC_OUTBOARD_CONFIG_RECEIVER)
 
 /* -------------------------------------------------------------------------
  * The region

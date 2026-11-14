@@ -148,6 +148,21 @@ int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_
     return 0;
 }
 
+/* The module selected for loading and the transport that registered with
+   HAL must agree before a measurement can claim an observation origin. */
+uint32_t hm2_region_io_origin(const char *transport) {
+    if (strcmp(hm2_shim_transport_name(), transport) != 0) {
+        return 0;
+    }
+    if (strcmp(transport, "hm2_eth") == 0) {
+        return CNC_OUTBOARD_CONFIG_HARDWARE_IO;
+    }
+    if (strcmp(transport, "hm2_test") == 0) {
+        return CNC_OUTBOARD_CONFIG_MODELED_IO;
+    }
+    return 0;
+}
+
 /* Fills the read-only header. Once, before either side starts cycling. */
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config) {
     cnc_outboard_shm *shm = region->shm;

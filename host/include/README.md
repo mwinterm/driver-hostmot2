@@ -1,13 +1,13 @@
-# Vendored from LibreCNC
+# Vendored from LeafCNC
 
-`cnc_outboard.h` is the outboard channel's layout, copied from the LibreCNC
+`cnc_outboard.h` is the outboard channel's layout, copied from the LeafCNC
 repository (ADR 0022 §8: this repository vendors it and says which version).
 
-    Upstream repo : https://github.com/mwinterm/LibreCNC
+    Upstream repo : https://github.com/mwinterm/LeafCNC
     Path          : crates/cnc-outboard-abi/include/cnc_outboard.h
-    Channel version: 2.3.0
-    Copied from commit: b1ac0d8d817d105c1130f4fc1a90984048631ec5 (LeafCNC branch feature/same-cycle, ADR 0046)
-    Copied on     : 2026-10-07
+    Channel version: 2.4.0
+    Copied from commit: 3a55cbdbff7167b0ef03218509c3c0713862ea2e (LeafCNC branch probing, ADR 0077)
+    Copied on     : 2026-11-14
 
 It is **Apache-2.0 OR MIT**, which is why this GPL-2.0 repository may compile
 against it, and it is the whole reason that dual license exists (ADR 0022 §3).
@@ -15,7 +15,7 @@ It includes no other header of that project's, so this is one file and not a
 tree.
 
 Nothing flows the other way. No function, snippet or algorithm from this
-repository or from LinuxCNC is copied into LibreCNC, and its CI fails on a GPL
+repository or from LinuxCNC is copied into LeafCNC, and its CI fails on a GPL
 license header anywhere in its tree.
 
 To take a newer channel version: copy the file again, update the commit above,
