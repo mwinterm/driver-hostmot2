@@ -223,6 +223,47 @@ const char *hm2_shim_component_name(void) {
     return component_count > 0 ? components[0].name : "";
 }
 
+/* The host calls the first .read and .write but publishes all HAL pins.
+   A region-wide origin is valid only if those callbacks service one board. */
+static int one_cyclic_board(void) {
+    const char *read_name = NULL;
+    const char *write_name = NULL;
+    for (size_t i = 0; i < funct_count; i++) {
+        const char *name = functs[i].name;
+        const char *suffix = strrchr(name, '.');
+        if (!suffix) {
+            continue;
+        }
+        if (strcmp(suffix, ".read") == 0) {
+            if (read_name) {
+                return 0;
+            }
+            read_name = name;
+        } else if (strcmp(suffix, ".write") == 0) {
+            if (write_name) {
+                return 0;
+            }
+            write_name = name;
+        }
+    }
+    if (!read_name || !write_name) {
+        return 0;
+    }
+    size_t board_len = strlen(read_name) - strlen(".read");
+    return board_len != 0 && strlen(write_name) == board_len + strlen(".write") &&
+           strncmp(read_name, write_name, board_len) == 0;
+}
+
+/* The generic driver starts first and each supported transport registers
+   one further HAL component. Only that completed pair identifies the I/O. */
+const char *hm2_shim_transport_name(void) {
+    if (component_count == 2 && hm2_shim_component_ready() &&
+        strcmp(components[0].name, "hostmot2") == 0 && one_cyclic_board()) {
+        return components[1].name;
+    }
+    return "";
+}
+
 /* ---------------------------------------------------------------------------
  * Pins and parameters
  * ------------------------------------------------------------------------- */

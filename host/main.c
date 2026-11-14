@@ -1155,7 +1155,8 @@ int main(int argc, char **argv) {
         .drive_watchdog_us = config.drive_watchdog_us,
         .spin_iterations = config.spin_iterations,
         .worst_case_cycle_ns = 0,
-        .flags = config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u,
+        .flags = hm2_region_io_origin(config.transport) |
+                 (config.same_cycle ? CNC_OUTBOARD_CONFIG_SAME_CYCLE : 0u),
     };
     hm2_region_describe(&region, &header);
     declare_signals(&region);

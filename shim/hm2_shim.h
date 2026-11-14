@@ -204,6 +204,8 @@ void hm2_shim_set_params(const char **names, const double *values, size_t count)
 /* Whether the driver called `hal_ready`, and what it called itself. */
 int hm2_shim_component_ready(void);
 const char *hm2_shim_component_name(void);
+/* Registered transport of a ready single-board driver, or the empty string. */
+const char *hm2_shim_transport_name(void);
 
 /* How much of the arena the driver took, for the start-up report. */
 size_t hm2_shim_arena_used(void);

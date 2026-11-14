@@ -97,10 +97,11 @@ typedef struct {
     uint32_t drive_watchdog_us;
     uint32_t spin_iterations;
     uint64_t worst_case_cycle_ns;
-    /* CNC_OUTBOARD_CONFIG_* (channel 2.3.0). */
+    /* CNC_OUTBOARD_CONFIG_* from the selected transport and timing mode. */
     uint32_t flags;
 } hm2_region_config;
 
+uint32_t hm2_region_io_origin(const char *transport);
 size_t hm2_region_layout(size_t inputs, size_t outputs, cnc_outboard_signal_block *out);
 int hm2_region_create(hm2_region *region, const char *name, size_t inputs, size_t outputs);
 void hm2_region_describe(hm2_region *region, const hm2_region_config *config);
